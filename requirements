@@ -1,0 +1,12 @@
+streamlit>=1.32
+opencv-python-headless>=4.9
+pytesseract>=0.3.10
+pillow>=10.0
+numpy>=1.26
+requests>=2.31
+pyzbar>=0.1.9
+matplotlib>=3.8
+reportlab>=4.0
+
+# System dependencies (install separately, not via pip):
+#   sudo apt-get install tesseract-ocr libzbar0
