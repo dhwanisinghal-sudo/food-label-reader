@@ -80,7 +80,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const extractedText = await tesseract.recognize(filePath, TESSERACT_CONFIG);
 
     const nutrition = parseNutrition(extractedText);
-    const ingredients = /ingredient/i.test(extractedText) ? parseIngredients(extractedText) : [];
+    const ingredients = parseIngredients(extractedText);
     const allergens = detectAllergens(ingredients);
     const dvPercent = calculateDailyValuePercent(nutrition);
     const healthScore = calculateHealthScore(dvPercent, nutrition);
