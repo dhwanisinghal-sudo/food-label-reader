@@ -29,11 +29,15 @@ const CONDITION_LABELS = {
   egg_allergy: 'Egg Allergy',
 };
 
-function buildPrompt(nutritionData, dvPercent, ingredients, conditions = []) {
+function buildPrompt(nutritionData, dvPercent, ingredients, conditions = [], additives = {}) {
   const conditionNote = conditions.length
     ? `\n5. The user has the following health condition(s): ${conditions
         .map((c) => CONDITION_LABELS[c] || c)
         .join(', ')}. Explicitly call out any nutrients OR ingredients here that are a concern for these condition(s) — for allergy/intolerance conditions (nut, dairy, gluten, egg), carefully check the ingredients list for relevant triggers and warn clearly if found. Tailor the "Healthy Eating Tip" to these condition(s).`
+    : '';
+
+  const additiveNote = Object.keys(additives).length
+    ? `\nDetected additives (already factored into the numeric health score — your write-up must be consistent with a lower score, not just mention these in passing): ${JSON.stringify(additives)}`
     : '';
 
   return `You are an experienced nutritionist with extensive knowledge of food science, dietary guidelines, and health optimization. Your task is to analyze the nutritional information below.
@@ -47,15 +51,16 @@ Instructions:
 - Begin your response with the phrase "Nutritional Analysis:" followed by your evaluation.
 - Use the JSON data to extract key information such as ingredients, macro-nutrients, and other components.
 - Highlight important values like calories, sugar, sodium, saturated fat, and beneficial nutrients (fiber, vitamins, etc.).
+- If additives are listed below, you MUST mention them explicitly — do not omit them even if the macros look fine.
 - Conclude with a "Healthy Eating Tip:" that provides actionable advice for maintaining a nutritious diet.
 - Keep the whole response under 120 words.
 
 Nutrition data (per serving): ${JSON.stringify(nutritionData)}
 % of daily value: ${JSON.stringify(dvPercent)}
-Ingredients: ${JSON.stringify(ingredients)}`;
+Ingredients: ${JSON.stringify(ingredients)}${additiveNote}`;
 }
 
-async function getLLMAnalysis(nutritionData, dvPercent, ingredients, conditions = []) {
+async function getLLMAnalysis(nutritionData, dvPercent, ingredients, conditions = [], additives = {}) {
   const token = process.env.HF_TOKEN;
   if (!token) {
     return { error: 'No HF_TOKEN set — add one to your .env file (free at huggingface.co/settings/tokens)' };
@@ -64,7 +69,7 @@ async function getLLMAnalysis(nutritionData, dvPercent, ingredients, conditions 
     return { error: 'No nutrition data to analyze' };
   }
 
-  const prompt = buildPrompt(nutritionData, dvPercent, ingredients, conditions);
+  const prompt = buildPrompt(nutritionData, dvPercent, ingredients, conditions, additives);
 
   try {
     const response = await fetch(HF_API_URL, {
@@ -103,8 +108,23 @@ const INGREDIENT_TRIGGERS = {
   egg_allergy: ['egg', 'albumin', 'mayonnaise'],
 };
 
-function ruleBasedFallback(dvPercent, conditions = [], ingredients = []) {
+function ruleBasedFallback(dvPercent, conditions = [], ingredients = [], additives = {}) {
   const flags = [];
+
+  const ADDITIVE_LABELS = {
+    artificialColors: 'artificial color(s)',
+    artificialSweeteners: 'artificial sweetener(s)',
+    nitritesNitrates: 'nitrite/nitrate preservative(s)',
+    otherPreservatives: 'preservative(s)',
+    hydrogenatedOils: 'partially hydrogenated oil (possible hidden trans fat)',
+    flavorEnhancers: 'flavor enhancer(s)',
+  };
+  for (const [category, hits] of Object.entries(additives)) {
+    if (hits && hits.length) {
+      flags.push(`⚠️ Contains ${ADDITIVE_LABELS[category] || category}: ${hits.join(', ')}.`);
+    }
+  }
+
   const highs = Object.entries(dvPercent).filter(([, pct]) => pct >= 40);
   const lows = Object.entries(dvPercent).filter(([, pct]) => pct <= 5);
 

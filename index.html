@@ -580,8 +580,13 @@
       <div class="seal" id="seal"><span class="n" id="sealNum">—</span><span class="l">SCORE</span></div>
       <div class="seal-text">
         <p class="t" id="sealLabel">—</p>
-        <p class="d">Overall health rating, from nutrient balance</p>
+        <p class="d">Overall health rating, from nutrients, additives, and processing level</p>
       </div>
+    </div>
+
+    <div class="score-breakdown" id="scoreBreakdown" style="display:none;">
+      <p class="tag" id="scoreBreakdownToggle" style="cursor:pointer;">▸ Why this score?</p>
+      <ul id="scoreBreakdownList" style="display:none; margin:6px 0 0 0; padding-left:18px; font-size:0.9em;"></ul>
     </div>
 
     <div class="note">
@@ -603,6 +608,14 @@ const scanBtn = document.getElementById('scanBtn');
 const statusEl = document.getElementById('status');
 const results = document.getElementById('results');
 const resetBtn = document.getElementById('resetBtn');
+
+document.getElementById('scoreBreakdownToggle').addEventListener('click', () => {
+  const list = document.getElementById('scoreBreakdownList');
+  const toggle = document.getElementById('scoreBreakdownToggle');
+  const open = list.style.display !== 'none';
+  list.style.display = open ? 'none' : 'block';
+  toggle.textContent = (open ? '▸' : '▾') + ' Why this score?';
+});
 
 let selectedFile = null;
 
@@ -773,6 +786,20 @@ function renderResults(data){
   seal.style.background = scoreColor(score);
   document.getElementById('sealNum').textContent = score;
   document.getElementById('sealLabel').textContent = label;
+
+  const breakdown = data.healthScore?.breakdown || [];
+  const breakdownWrap = document.getElementById('scoreBreakdown');
+  const breakdownList = document.getElementById('scoreBreakdownList');
+  if(breakdown.length){
+    breakdownWrap.style.display = 'block';
+    breakdownList.innerHTML = breakdown
+      .slice()
+      .sort((a,b) => a.delta - b.delta) // biggest penalties first
+      .map(b => `<li>${b.delta > 0 ? '+' : ''}${b.delta} — ${b.reason}</li>`)
+      .join('');
+  } else {
+    breakdownWrap.style.display = 'none';
+  }
 
   document.getElementById('noteText').textContent = data.healthAnalysis || 'No analysis available.';
 
