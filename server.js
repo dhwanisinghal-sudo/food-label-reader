@@ -100,7 +100,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     if (llmResult.analysis) {
       healthAnalysis = llmResult.analysis;
     } else {
-      healthAnalysis = ruleBasedFallback(dvPercent, conditions) + (llmResult.error ? ` (LLM unavailable: ${llmResult.error})` : '');
+      healthAnalysis = ruleBasedFallback(dvPercent, conditions, ingredients) + (llmResult.error ? ` (LLM unavailable: ${llmResult.error})` : '');
     }
 
     const responsePayload = {
