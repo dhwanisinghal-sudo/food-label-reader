@@ -12,24 +12,28 @@
 
 const fetch = require('node-fetch');
 
-// Free instruction-tuned model on HF Inference API. Swap for another
-// hosted model if this one is unavailable/rate-limited on your token.
 const HF_MODEL = 'meta-llama/Llama-3.1-8B-Instruct';
 const HF_API_URL = 'https://router.huggingface.co/v1/chat/completions';
 
-// Maps the checkbox values sent from the frontend to human-readable labels
-// used inside the LLM prompt.
 const CONDITION_LABELS = {
   diabetes: 'Diabetes',
   high_bp: 'High Blood Pressure',
   high_cholesterol: 'High Cholesterol',
+  kidney_disease: 'Kidney Disease',
+  heart_disease: 'Heart Disease',
+  weight_management: 'Weight Management',
+  pregnancy: 'Pregnancy',
+  nut_allergy: 'Nut Allergy',
+  dairy_intolerance: 'Dairy / Lactose Intolerance',
+  gluten_celiac: 'Gluten / Celiac',
+  egg_allergy: 'Egg Allergy',
 };
 
 function buildPrompt(nutritionData, dvPercent, ingredients, conditions = []) {
   const conditionNote = conditions.length
     ? `\n5. The user has the following health condition(s): ${conditions
         .map((c) => CONDITION_LABELS[c] || c)
-        .join(', ')}. Explicitly call out any nutrients here that are a concern for these condition(s), and tailor the "Healthy Eating Tip" to them.`
+        .join(', ')}. Explicitly call out any nutrients OR ingredients here that are a concern for these condition(s) — for allergy/intolerance conditions (nut, dairy, gluten, egg), carefully check the ingredients list for relevant triggers and warn clearly if found. Tailor the "Healthy Eating Tip" to these condition(s).`
     : '';
 
   return `You are an experienced nutritionist with extensive knowledge of food science, dietary guidelines, and health optimization. Your task is to analyze the nutritional information below.
@@ -92,9 +96,14 @@ async function getLLMAnalysis(nutritionData, dvPercent, ingredients, conditions 
   }
 }
 
-// Lightweight rule-based fallback (used if no HF_TOKEN, or the API call
-// fails/rate-limits) so the endpoint still returns something useful.
-function ruleBasedFallback(dvPercent, conditions = []) {
+const INGREDIENT_TRIGGERS = {
+  nut_allergy: ['peanut', 'almond', 'cashew', 'walnut', 'pecan', 'pistachio', 'hazelnut', 'macadamia', 'tree nut', 'nut'],
+  dairy_intolerance: ['milk', 'cream', 'butter', 'cheese', 'whey', 'casein', 'lactose', 'yogurt', 'dairy'],
+  gluten_celiac: ['wheat', 'barley', 'rye', 'malt', 'gluten', 'flour', 'bran', 'semolina'],
+  egg_allergy: ['egg', 'albumin', 'mayonnaise'],
+};
+
+function ruleBasedFallback(dvPercent, conditions = [], ingredients = []) {
   const flags = [];
   const highs = Object.entries(dvPercent).filter(([, pct]) => pct >= 40);
   const lows = Object.entries(dvPercent).filter(([, pct]) => pct <= 5);
@@ -105,13 +114,11 @@ function ruleBasedFallback(dvPercent, conditions = []) {
   }
   for (const [key] of lows) {
     const name = key.replace(/_g|_mg/g, '').replace(/_/g, ' ');
-    if (['protein_g', 'fiber_g'].includes(key)) continue; // low protein/fiber isn't a "good" flag
+    if (['protein_g', 'fiber_g'].includes(key)) continue;
     flags.push(`✅ Low ${name}.`);
   }
   if ((dvPercent.protein_g || 0) >= 15) flags.push('✅ Good protein content.');
 
-  // Condition-specific warnings — only shown when the user has selected
-  // that condition on the frontend.
   if (conditions.includes('diabetes') && (dvPercent.total_sugars_g || 0) >= 15) {
     flags.push('🩺 Diabetes note: sugar content here may cause a notable blood sugar spike.');
   }
@@ -120,6 +127,30 @@ function ruleBasedFallback(dvPercent, conditions = []) {
   }
   if (conditions.includes('high_cholesterol') && (dvPercent.saturated_fat_g || 0) >= 15) {
     flags.push('🩺 Cholesterol note: saturated fat content may impact cholesterol levels.');
+  }
+  if (conditions.includes('kidney_disease') && (dvPercent.sodium_mg || 0) >= 15) {
+    flags.push('🩺 Kidney note: sodium (and check for potassium/phosphorus additives) may be a concern.');
+  }
+  if (conditions.includes('heart_disease') && ((dvPercent.saturated_fat_g || 0) >= 15 || (dvPercent.sodium_mg || 0) >= 15)) {
+    flags.push('🩺 Heart health note: saturated fat and/or sodium levels here are worth watching.');
+  }
+  if (conditions.includes('weight_management') && (dvPercent.calories || 0) >= 20) {
+    flags.push('🩺 Weight management note: this is a calorie-dense item relative to daily needs — mind portion size.');
+  }
+  if (conditions.includes('pregnancy') && (dvPercent.sodium_mg || 0) >= 15) {
+    flags.push('🩺 Pregnancy note: sodium level here is on the higher side — moderate intake recommended.');
+  }
+
+  const ingredientsText = (ingredients || []).join(' ').toLowerCase();
+  for (const cond of ['nut_allergy', 'dairy_intolerance', 'gluten_celiac', 'egg_allergy']) {
+    if (!conditions.includes(cond)) continue;
+    const triggers = INGREDIENT_TRIGGERS[cond];
+    const found = triggers.filter((t) => ingredientsText.includes(t));
+    if (found.length) {
+      flags.push(`🚨 ${CONDITION_LABELS[cond]} alert: ingredients list mentions "${found.join('", "')}" — check carefully.`);
+    } else if (ingredientsText) {
+      flags.push(`✅ ${CONDITION_LABELS[cond]}: no obvious trigger ingredients detected, but always verify the physical label.`);
+    }
   }
 
   if (flags.length === 0) flags.push('ℹ️ Nutrition values are within moderate range.');
