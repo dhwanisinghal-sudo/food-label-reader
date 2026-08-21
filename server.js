@@ -35,6 +35,15 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
+// Accepts the main label photo under "image", plus an optional close-up
+// photo of just the ingredients list under "ingredientsImage" — useful
+// when the ingredients text is physically separate from the nutrition
+// facts panel and didn't fit in a single frame.
+const uploadFields = upload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'ingredientsImage', maxCount: 1 },
+]);
+
 if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
   fs.mkdirSync(path.join(__dirname, 'uploads'));
 }
@@ -62,12 +71,16 @@ app.get('/api/history', async (req, res) => {
   }
 });
 
-app.post('/api/analyze', upload.single('image'), async (req, res) => {
-  if (!req.file) {
+app.post('/api/analyze', uploadFields, async (req, res) => {
+  const mainFile = req.files && req.files.image && req.files.image[0];
+  const ingredientsFile = req.files && req.files.ingredientsImage && req.files.ingredientsImage[0];
+
+  if (!mainFile) {
     return res.status(400).json({ error: 'No image uploaded. Send a file under field name "image".' });
   }
 
-  const filePath = req.file.path;
+  const filePath = mainFile.path;
+  const ingredientsFilePath = ingredientsFile ? ingredientsFile.path : null;
 
   let conditions = [];
   try {
@@ -80,7 +93,22 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     const extractedText = await tesseract.recognize(filePath, TESSERACT_CONFIG);
 
     const nutrition = parseNutrition(extractedText);
-    const ingredients = parseIngredients(extractedText);
+    let ingredients = parseIngredients(extractedText);
+    let ingredientsSource = ingredients.length ? 'main_photo' : null;
+
+    // Fallback: the ingredients heading often isn't in the same frame as the
+    // nutrition facts panel. If the main photo didn't yield anything and a
+    // dedicated ingredients photo was provided, OCR that separately and
+    // parse ingredients from it instead.
+    if (ingredients.length === 0 && ingredientsFilePath) {
+      const ingredientsText = await tesseract.recognize(ingredientsFilePath, TESSERACT_CONFIG);
+      const fromSecondPhoto = parseIngredients(ingredientsText);
+      if (fromSecondPhoto.length) {
+        ingredients = fromSecondPhoto;
+        ingredientsSource = 'ingredients_photo';
+      }
+    }
+
     const allergens = detectAllergens(ingredients);
     const dvPercent = calculateDailyValuePercent(nutrition);
     const healthScore = calculateHealthScore(dvPercent, nutrition);
@@ -108,6 +136,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
       nutrition,
       dailyValuePercent: dvPercent,
       ingredients,
+      ingredientsSource,
       allergens,
       healthScore,
       healthAnalysis,
@@ -129,6 +158,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     res.status(500).json({ error: `Processing failed: ${err.message}` });
   } finally {
     fs.unlink(filePath, () => {});
+    if (ingredientsFilePath) fs.unlink(ingredientsFilePath, () => {});
   }
 });
 
