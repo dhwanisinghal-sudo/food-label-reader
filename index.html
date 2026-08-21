@@ -563,7 +563,7 @@
 </div>
 
 <script>
-const API_URL = 'http://localhost:5000/api/analyze';
+const API_URL = '/api/analyze';
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
@@ -720,9 +720,6 @@ function renderResults(data){
       ? badges.join('')
       : `<p class="off-empty">Product found, but no Nutri-Score/NOVA/Eco-Score on file yet.</p>`;
   } else if(data.barcode){
-    // A code was detected in the photo, but OpenFoodFacts has no match
-    // (or it's a QR that isn't a product code) — still worth telling the
-    // user the scan itself worked.
     offPanel.style.display = 'block';
     const label = data.barcodeType === 'QR-Code' ? 'QR code' : 'Barcode';
     offProductEl.innerHTML = `${label} <b>${data.barcode}</b> detected.`;
@@ -772,7 +769,7 @@ scanBtn.addEventListener('click', async () => {
     renderResults(data);
   }catch(err){
     statusEl.className = 'status err';
-    statusEl.textContent = `Couldn't analyze this label: ${err.message}. Is the backend running on localhost:5000?`;
+    statusEl.textContent = `Couldn't analyze this label: ${err.message}`;
   }finally{
     scanBtn.disabled = false;
   }
