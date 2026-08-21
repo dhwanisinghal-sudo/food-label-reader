@@ -78,8 +78,18 @@ function parseNutrition(text) {
   return data;
 }
 
+// Tolerant to common OCR misreads: INGREDIENTS -> INGREDlENTS, INGREDIENT5,
+// NGREDIENTS (dropped leading I), etc. Matches the label heading and
+// everything up to the first stop pattern below.
+const INGREDIENTS_HEADING = /i?ngr[e3]d[il1]?[e3]nts?\s*:?/i;
+
 function parseIngredients(text) {
-  let cleaned = text.replace(/ingredients\s*:?/i, '').trim();
+  const headingMatch = text.match(INGREDIENTS_HEADING);
+  // If we can't even find the heading, there's nothing reliable to slice —
+  // return [] rather than guessing from the whole OCR text.
+  if (!headingMatch) return [];
+
+  let cleaned = text.slice(headingMatch.index + headingMatch[0].length).trim();
 
   const stopPatterns = [
     /nutrition facts/i, /serving size/i,
