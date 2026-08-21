@@ -618,7 +618,7 @@ document.querySelectorAll('#chipGroup input[type=checkbox]').forEach((box) => {
 function getSelectedConditions(){
   return Array.from(document.querySelectorAll('#chipGroup input:checked')).map(el => el.value);
 }
-const CONDITION_LABELS = { diabetes: 'Diabetes', high_bp: 'High Blood Pressure', high_cholesterol: 'High Cholesterol' };
+const CONDITION_LABELS = { diabetes: 'Diabetes', high_bp: 'High Blood Pressure', high_cholesterol: 'High Cholesterol', kidney_disease: 'Kidney Disease', heart_disease: 'Heart Disease', weight_management: 'Weight Management', pregnancy: 'Pregnancy', nut_allergy: 'Nut Allergy', dairy_intolerance: 'Dairy/Lactose Intolerance', gluten_celiac: 'Gluten/Celiac', egg_allergy: 'Egg Allergy' };
 
 function nutrientLabel(key){
   const map = {
