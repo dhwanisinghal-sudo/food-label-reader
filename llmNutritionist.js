@@ -14,7 +14,7 @@ const fetch = require('node-fetch');
 
 // Free instruction-tuned model on HF Inference API. Swap for another
 // hosted model if this one is unavailable/rate-limited on your token.
-const HF_MODEL = 'Qwen/Qwen2.5-7B-Instruct:fastest';
+const HF_MODEL = 'meta-llama/Llama-3.1-8B-Instruct';
 const HF_API_URL = 'https://router.huggingface.co/v1/chat/completions';
 
 // Maps the checkbox values sent from the frontend to human-readable labels
