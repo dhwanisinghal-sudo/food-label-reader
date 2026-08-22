@@ -1,3 +1,16 @@
+# Environment variables / secrets — never commit these
 .env
-node_modules/ 
+.env.local
+.env.*.local
+
+# Node
+node_modules/
 uploads/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS
+.DS_Store
