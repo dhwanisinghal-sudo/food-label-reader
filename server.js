@@ -148,7 +148,16 @@ app.post('/api/analyze', uploadFields, async (req, res) => {
     if (llmResult.analysis) {
       healthAnalysis = llmResult.analysis;
     } else {
-      healthAnalysis = ruleBasedFallback(dvPercent, conditions, ingredients, additives) + (llmResult.error ? ` (LLM unavailable: ${llmResult.error})` : '');
+      // llmResult.error is an internal/debug message (e.g. "LLM output named
+      // an additive not matching the parsed ingredients — discarded"). It's
+      // useful in server logs but meaningless and alarming to an end user
+      // ("LLM unavailable: ..."), so it's logged here and never appended to
+      // the user-facing analysis text. The rule-based fallback is already
+      // accurate on its own and needs no caveat.
+      if (llmResult.error) {
+        console.warn('LLM analysis unavailable, using rule-based fallback:', llmResult.error);
+      }
+      healthAnalysis = ruleBasedFallback(dvPercent, conditions, ingredients, additives);
     }
 
     const responsePayload = {
