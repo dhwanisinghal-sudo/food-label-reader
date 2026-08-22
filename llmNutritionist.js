@@ -6,13 +6,18 @@
  *
  * Set HF_TOKEN in your .env file (free at https://huggingface.co/settings/tokens).
  *
+ * Using Qwen/Qwen2.5-7B-Instruct instead of a Llama model: Llama models on
+ * Hugging Face are "gated" — they require accepting Meta's license on the
+ * HF account tied to your token, or every API call 403s even with a valid
+ * token. Qwen2.5-Instruct is ungated and works immediately with any token.
+ *
  * NOTE: HuggingFace deprecated api-inference.huggingface.co in favor of
  * router.huggingface.co with an OpenAI-compatible chat completions format.
  */
 
 const fetch = require('node-fetch');
 
-const HF_MODEL = 'meta-llama/Llama-3.1-8B-Instruct';
+const HF_MODEL = 'Qwen/Qwen2.5-7B-Instruct';
 const HF_API_URL = 'https://router.huggingface.co/v1/chat/completions';
 
 const CONDITION_LABELS = {
