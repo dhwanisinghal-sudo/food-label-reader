@@ -35,25 +35,203 @@ const PATTERNS = {
   protein_g: new RegExp('protein\\s*' + NUM + '\\s*[g3]', 'i'),
 };
 
-function cleanNum(raw) {
-  const fixed = raw.replace(/O/g, '0').replace(/o/g, '0').replace(/I/g, '1').replace(/l/g, '1');
+// Order nutrients normally appear top-to-bottom on a US/India-style label.
+// Used only as a last-resort positional fallback (Tier C below) when a
+// number can't be tied to any label text at all.
+const NUTRIENT_ORDER = [
+  'calories', 'total_fat_g', 'saturated_fat_g', 'trans_fat_g', 'cholesterol_mg',
+  'sodium_mg', 'total_carbs_g', 'fiber_g', 'total_sugars_g', 'added_sugars_g', 'protein_g',
+];
+
+// Plain-English label text for each nutrient, used for fuzzy (edit-distance)
+// matching when the strict regex above fails to match the label wording.
+const FUZZY_LABELS = {
+  total_fat_g: 'total fat', saturated_fat_g: 'saturated fat', trans_fat_g: 'trans fat',
+  cholesterol_mg: 'cholesterol', sodium_mg: 'sodium', total_carbs_g: 'total carbohydrate',
+  fiber_g: 'dietary fiber', total_sugars_g: 'total sugars', added_sugars_g: 'added sugars',
+  protein_g: 'protein',
+};
+
+const EXPECTED_UNIT = {
+  total_fat_g: 'g', saturated_fat_g: 'g', trans_fat_g: 'g', cholesterol_mg: 'mg',
+  sodium_mg: 'mg', total_carbs_g: 'g', fiber_g: 'g', total_sugars_g: 'g',
+  added_sugars_g: 'g', protein_g: 'g',
+};
+
+function unitSuffix(key) {
+  if (key === 'calories') return '';
+  if (key.endsWith('_mg')) return 'mg';
+  if (key.endsWith('_g')) return 'g';
+  return '';
+}
+
+// Like cleanNum, but also reports exactly which OCR digit/letter confusions
+// it fixed (e.g. "O"->"0"), so callers can surface that instead of silently
+// swapping characters.
+function analyzeNum(raw) {
+  const fixes = [];
+  let fixed = raw;
+  if (/[Oo]/.test(fixed)) {
+    fixed = fixed.replace(/[Oo]/g, '0');
+    fixes.push('"O" → "0"');
+  }
+  if (/[Il]/.test(fixed)) {
+    fixed = fixed.replace(/[Il]/g, '1');
+    fixes.push('"I"/"l" → "1"');
+  }
   const value = parseFloat(fixed);
-  return Number.isNaN(value) ? null : value;
+  return { value: Number.isNaN(value) ? null : value, fixes };
+}
+
+function cleanNum(raw) {
+  return analyzeNum(raw).value;
+}
+
+// Minimum edit distance between `phrase` and any contiguous word-chunk of
+// `context`, tried at a few chunk sizes. Lower = better match. Returns
+// Infinity if context has no words at all.
+function fuzzyLabelScore(context, phrase) {
+  const words = context.split(/[^a-z]+/i).filter(Boolean);
+  const phraseWordCount = phrase.split(' ').length;
+  let best = Infinity;
+  for (let size = 1; size <= phraseWordCount + 1; size += 1) {
+    for (let i = 0; i <= words.length - size; i += 1) {
+      const chunk = words.slice(i, i + size).join(' ');
+      const dist = levenshtein(chunk.toLowerCase(), phrase);
+      if (dist < best) best = dist;
+    }
+  }
+  return best;
+}
+
+// Fills in nutrients the strict PATTERNS above couldn't match, so a garbled
+// label heading (not just a garbled number) doesn't cause that nutrient to
+// be dropped entirely. Two tiers, both reported via the returned corrections:
+//   Tier B (fuzzy_label_match): number's nearby text fuzzy-matches the
+//     nutrient's name closely enough (edit-distance) to trust it.
+//   Tier C (positional_guess): nothing textually close was found, so the
+//     closest remaining unclaimed number is assigned by the label's usual
+//     top-to-bottom order — always picks the closest candidate rather than
+//     leaving the field empty, but flagged as low-confidence for review.
+function fuzzyFillMissing(text, missingKeys, claimedRanges) {
+  const normalized = normalizeOcrText(text);
+  const isClaimed = (idx) => claimedRanges.some(([s, e]) => idx >= s && idx < e);
+
+  const candRegex = /([0-9]+(?:\.[0-9]+)?)\s*(g|mg)\b/gi;
+  const candidates = [];
+  let m = candRegex.exec(normalized);
+  while (m !== null) {
+    if (!isClaimed(m.index)) {
+      candidates.push({ index: m.index, raw: m[1], unit: m[2].toLowerCase(), matchText: m[0] });
+    }
+    m = candRegex.exec(normalized);
+  }
+
+  const results = [];
+
+  // --- Tier B: fuzzy label-text proximity match ---------------------------
+  const pairs = [];
+  for (const key of missingKeys) {
+    const unit = EXPECTED_UNIT[key];
+    const phrase = FUZZY_LABELS[key];
+    if (!unit || !phrase) continue;
+    const [lo, hi] = PLAUSIBLE_RANGE[key] || [0, Infinity];
+    for (const cand of candidates) {
+      if (cand.unit !== unit) continue;
+      const value = parseFloat(cand.raw);
+      if (Number.isNaN(value) || value < lo || value > hi) continue;
+      const context = normalized.slice(Math.max(0, cand.index - 35), cand.index).toLowerCase();
+      const score = fuzzyLabelScore(context, phrase);
+      pairs.push({ key, cand, value, score });
+    }
+  }
+  pairs.sort((a, b) => a.score - b.score);
+
+  const usedKeys = new Set();
+  const usedCandidates = new Set();
+  const maxDistFor = (phrase) => Math.max(2, Math.ceil(phrase.replace(/ /g, '').length * 0.45));
+
+  for (const pair of pairs) {
+    if (usedKeys.has(pair.key) || usedCandidates.has(pair.cand)) continue;
+    if (pair.score > maxDistFor(FUZZY_LABELS[pair.key])) continue;
+    usedKeys.add(pair.key);
+    usedCandidates.add(pair.cand);
+    results.push({
+      field: pair.key,
+      value: pair.value,
+      correction: {
+        field: pair.key,
+        method: 'fuzzy_label_match',
+        status: 'inferred',
+        confidence: pair.score === 0 ? 'medium' : 'low',
+        rawMatch: pair.cand.matchText.trim(),
+        correctedValue: pair.value,
+        note: `The strict "${FUZZY_LABELS[pair.key]}" pattern didn't match — its label text is likely OCR-garbled. "${pair.cand.matchText.trim()}" nearby fuzzy-matched that nutrient's name (edit distance ${pair.score}) and was picked as the closest/most likely match instead of being skipped.`,
+      },
+    });
+  }
+
+  // --- Tier C: positional fallback, only for whatever is still unassigned -
+  const stillMissing = missingKeys.filter((k) => !usedKeys.has(k));
+  const remainingCandidates = candidates.filter((c) => !usedCandidates.has(c)).sort((a, b) => a.index - b.index);
+
+  for (const key of NUTRIENT_ORDER.filter((k) => stillMissing.includes(k))) {
+    const unit = EXPECTED_UNIT[key];
+    if (!unit) continue;
+    const [lo, hi] = PLAUSIBLE_RANGE[key] || [0, Infinity];
+    const idx = remainingCandidates.findIndex((c) => c.unit === unit);
+    if (idx === -1) continue;
+    const cand = remainingCandidates[idx];
+    const value = parseFloat(cand.raw);
+    if (Number.isNaN(value) || value < lo || value > hi) continue;
+    remainingCandidates.splice(idx, 1);
+    results.push({
+      field: key,
+      value,
+      correction: {
+        field: key,
+        method: 'positional_guess',
+        status: 'inferred',
+        confidence: 'low',
+        rawMatch: cand.matchText.trim(),
+        correctedValue: value,
+        note: `No label text near "${cand.matchText.trim()}" could be matched to "${FUZZY_LABELS[key] || key.replace(/_/g, ' ')}" — assigned by the label's typical top-to-bottom order as the closest remaining guess. Please verify against the photo.`,
+      },
+    });
+  }
+
+  return results;
 }
 
 function parseNutrition(text) {
   const data = {};
+  const corrections = [];
+  const claimedRanges = [];
 
   for (const [key, pattern] of Object.entries(PATTERNS)) {
     const match = text.match(pattern);
     if (!match) continue;
 
-    let value = cleanNum(match[1]);
-    if (value === null) continue;
+    const { value: rawValue, fixes } = analyzeNum(match[1]);
+    if (rawValue === null) continue;
 
     const [lo, hi] = PLAUSIBLE_RANGE[key] || [0, Infinity];
-    if (value < lo || value > hi) continue;
+    if (rawValue < lo || rawValue > hi) {
+      // Don't silently drop this — report it, then let the fuzzy fallback
+      // pass below try to find a more plausible candidate for this nutrient.
+      corrections.push({
+        field: key,
+        method: 'strict_label_match',
+        status: 'rejected_implausible',
+        rawMatch: match[0].trim(),
+        parsedValue: rawValue,
+        note: `Matched "${match[0].trim()}" next to the "${key.replace(/_/g, ' ')}" label, but ${rawValue}${unitSuffix(key)} is outside the plausible range (${lo}-${hi}${unitSuffix(key)}) — discarded instead of trusted.`,
+      });
+      continue;
+    }
 
+    let value = rawValue;
+    let dvNote = null;
     if (key in DAILY_VALUES) {
       const window = text.slice(match.index + match[0].length, match.index + match[0].length + 15);
       const pctMatch = window.match(/(\d{1,3})\s*%/);
@@ -63,17 +241,57 @@ function parseNutrition(text) {
         if (declaredPct > 0 && ourPct > 0) {
           const ratio = ourPct / declaredPct;
           if (ratio > 2.5 || ratio < 0.4) {
-            value = Math.round((declaredPct / 100) * DAILY_VALUES[key] * 100) / 100;
+            const corrected = Math.round((declaredPct / 100) * DAILY_VALUES[key] * 100) / 100;
+            dvNote = { from: value, to: corrected, declaredPct };
+            value = corrected;
           }
         }
       }
     }
 
-    data[key] = key === 'calories' ? Math.round(value) : value;
+    const finalValue = key === 'calories' ? Math.round(value) : value;
+    data[key] = finalValue;
+    claimedRanges.push([match.index, match.index + match[0].length]);
+
+    if (fixes.length) {
+      corrections.push({
+        field: key,
+        method: 'ocr_digit_fix',
+        status: 'corrected',
+        rawMatch: match[0].trim(),
+        rawValue: match[1],
+        fixesApplied: fixes,
+        correctedValue: finalValue,
+        note: `OCR read "${match[1]}" for ${key.replace(/_/g, ' ')} — fixed ${fixes.join(' and ')} → ${finalValue}${unitSuffix(key)}.`,
+      });
+    }
+    if (dvNote) {
+      corrections.push({
+        field: key,
+        method: 'dv_crosscheck',
+        status: 'corrected',
+        rawValue: dvNote.from,
+        correctedValue: finalValue,
+        declaredPct: dvNote.declaredPct,
+        note: `Parsed amount ${dvNote.from}${unitSuffix(key)} disagreed sharply with the label's own printed ${dvNote.declaredPct}% daily value — recalculated to ${finalValue}${unitSuffix(key)} from that %DV instead.`,
+      });
+    }
+  }
+
+  // Fill anything the strict patterns missed (garbled label text) rather
+  // than leaving it out — see fuzzyFillMissing for the two fallback tiers.
+  const missingKeys = NUTRIENT_ORDER.filter((k) => !(k in data) && k !== 'calories');
+  if (missingKeys.length) {
+    for (const r of fuzzyFillMissing(text, missingKeys, claimedRanges)) {
+      data[r.field] = r.value;
+      corrections.push(r.correction);
+    }
   }
 
   const servingMatch = text.match(/serving size\s*([^\n]+)/i);
   if (servingMatch) data.serving_size = servingMatch[1].trim();
+
+  if (corrections.length) data.corrections = corrections;
 
   return data;
 }
