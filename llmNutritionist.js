@@ -37,7 +37,8 @@ function buildPrompt(nutritionData, dvPercent, ingredients, conditions = [], add
     : '';
 
   const additiveNote = Object.keys(additives).length
-    ? `\nDetected additives (already factored into the numeric health score — your write-up must be consistent with a lower score, not just mention these in passing): ${JSON.stringify(additives)}`
+    ? `\nDetected additives (already factored into the numeric health score — your write-up must be consistent with a lower score, not just mention these in passing): ${JSON.stringify(additives)}
+IMPORTANT: When mentioning these additives, copy the names EXACTLY as given above and preserve the ingredient string's original wording verbatim (e.g. if it says "Including Red 40", do not rewrite this as "excluding Red 40" or any other paraphrase of inclusion/exclusion). Do NOT name any additive that is not listed above.`
     : '';
 
   return `You are an experienced nutritionist with extensive knowledge of food science, dietary guidelines, and health optimization. Your task is to analyze the nutritional information below.
@@ -114,6 +115,53 @@ function validateAnalysisNumbers(analysisText, nutritionData, dvPercent) {
   return true;
 }
 
+// --- Post-generation ENTITY validation -------------------------------------
+// Numeric validation alone missed two real failure modes observed in
+// production output from the free 8B model:
+//   1. Fabricating a plausible-sounding additive that isn't in the parsed
+//      ingredients at all (e.g. writing "Disodium Inosinate" when only
+//      "Disodium Guanylate" was actually detected).
+//   2. Inverting a relationship the data actually stated (e.g. writing
+//      "artificial color, excluding Red 40" when the ingredient list says
+//      "Including Red 40").
+// Named additive compounds are specific enough to name-check directly
+// against what detectAdditives() actually found. We can't fully solve (2)
+// in general, but checking that every additive *name* mentioned in the text
+// is one we actually detected — and flagging blanket inversion words like
+// "excluding"/"not included"/"free of" next to a named additive that IS in
+// our detected list — catches both cases above.
+const KNOWN_ADDITIVE_NAMES = [
+  'monosodium glutamate', 'msg', 'disodium inosinate', 'disodium guanylate',
+  "disodium 5'-ribonucleotides", 'aspartame', 'sucralose', 'acesulfame',
+  'saccharin', 'neotame', 'advantame', 'sodium nitrite', 'sodium nitrate',
+  'potassium nitrite', 'potassium nitrate', 'bht', 'bha', 'tbhq',
+  'sodium benzoate', 'potassium sorbate', 'sodium metabisulfite',
+  'sulfur dioxide', 'propyl gallate', 'red 40', 'red 3', 'yellow 5',
+  'yellow 6', 'blue 1', 'blue 2', 'green 3',
+];
+const INVERSION_WORDS = /\b(excluding|not include[sd]?|free of|without|does not contain)\b/i;
+
+function validateAnalysisEntities(analysisText, additives) {
+  const lowerText = analysisText.toLowerCase();
+  const detectedNames = Object.values(additives || {})
+    .flat()
+    .map((s) => String(s).toLowerCase());
+
+  for (const name of KNOWN_ADDITIVE_NAMES) {
+    if (!lowerText.includes(name)) continue;
+    const wasActuallyDetected = detectedNames.some((d) => d.includes(name));
+    if (!wasActuallyDetected) return false; // named an additive we never found — hallucinated
+
+    // If it WAS detected, make sure the model isn't claiming it's absent
+    // ("excluding Red 40") right next to the name — a cheap proximity check.
+    const idx = lowerText.indexOf(name);
+    const windowStart = Math.max(0, idx - 40);
+    const window = lowerText.slice(windowStart, idx + name.length + 10);
+    if (INVERSION_WORDS.test(window)) return false;
+  }
+  return true;
+}
+
 async function getLLMAnalysis(nutritionData, dvPercent, ingredients, conditions = [], additives = {}) {
   const token = process.env.HF_TOKEN;
   if (!token) {
@@ -153,6 +201,9 @@ async function getLLMAnalysis(nutritionData, dvPercent, ingredients, conditions 
     if (text && !validateAnalysisNumbers(text, nutritionData, dvPercent)) {
       return { error: 'LLM output contained a number not present in the parsed data (likely hallucinated) — discarded' };
     }
+    if (text && !validateAnalysisEntities(text, additives)) {
+      return { error: 'LLM output named or mischaracterized an additive not matching the parsed ingredients (likely hallucinated) — discarded' };
+    }
 
     return { analysis: text };
   } catch (err) {
@@ -163,9 +214,23 @@ async function getLLMAnalysis(nutritionData, dvPercent, ingredients, conditions 
 const INGREDIENT_TRIGGERS = {
   nut_allergy: ['peanut', 'almond', 'cashew', 'walnut', 'pecan', 'pistachio', 'hazelnut', 'macadamia', 'tree nut', 'nut'],
   dairy_intolerance: ['milk', 'cream', 'butter', 'cheese', 'whey', 'casein', 'lactose', 'yogurt', 'dairy'],
-  gluten_celiac: ['wheat', 'barley', 'rye', 'malt', 'gluten', 'flour', 'bran', 'semolina'],
+  // NOTE: 'malt' is deliberately excluded here. Plain substring matching on
+  // 'malt' false-positives on "Maltodextrin", which is usually corn- or
+  // potato-derived and carries no gluten risk. Barley malt itself is still
+  // caught via 'barley' and the dedicated maltRegex check below.
+  gluten_celiac: ['wheat', 'barley', 'rye', 'gluten', 'flour', 'bran', 'semolina'],
   egg_allergy: ['egg', 'albumin', 'mayonnaise'],
 };
+
+// Matches "malt" as a real gluten-risk ingredient (malt, malt extract, malt
+// syrup, malted barley) while explicitly skipping "maltodextrin" — and skips
+// entirely if the ingredient string itself qualifies the source as
+// corn/potato/rice/tapioca, e.g. "Maltodextrin (Made From Corn)".
+function hasGlutenRiskMalt(ingredientsText) {
+  const NON_GLUTEN_SOURCE = /\b(corn|potato|rice|tapioca)\b/;
+  if (NON_GLUTEN_SOURCE.test(ingredientsText)) return false;
+  return /\bmalt(?!odextrin)\w*/.test(ingredientsText);
+}
 
 function ruleBasedFallback(dvPercent, conditions = [], ingredients = [], additives = {}) {
   const flags = [];
@@ -225,6 +290,7 @@ function ruleBasedFallback(dvPercent, conditions = [], ingredients = [], additiv
     if (!conditions.includes(cond)) continue;
     const triggers = INGREDIENT_TRIGGERS[cond];
     const found = triggers.filter((t) => ingredientsText.includes(t));
+    if (cond === 'gluten_celiac' && hasGlutenRiskMalt(ingredientsText)) found.push('malt');
     if (found.length) {
       flags.push(`🚨 ${CONDITION_LABELS[cond]} alert: ingredients list mentions "${found.join('", "')}" — check carefully.`);
     } else if (ingredientsText) {
