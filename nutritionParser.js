@@ -35,6 +35,34 @@ const PATTERNS = {
   protein_g: new RegExp('protein\\s*' + NUM + '\\s*[g3]', 'i'),
 };
 
+// Almost every US-style Nutrition Facts label carries a "% Daily Values are
+// based on a 2,000 calorie diet" reference table near the bottom, which
+// RE-USES the exact same nutrient names with generic FDA guideline numbers
+// (e.g. "Total Fat Less than 65g 80g", "Dietary Fiber 25g 30g") — those are
+// NOT this product's values. Both the strict patterns (for total_carbs_g /
+// fiber_g, which don't require "less than" in between) and the fuzzy
+// fallback tiers below are vulnerable to locking onto this table instead of
+// the real per-serving numbers above it. We cut the text off at the start
+// of that table before any extraction happens, so it can never be mistaken
+// for actual product data.
+const FOOTNOTE_MARKER = /\*\s*(?:the\s*)?%?\s*percent daily values?\s*(?:\(%\s*dv\)\s*)?are\s*based|calories:\s*2,?000\s*2,?500|your daily values? may be higher or lower/i;
+
+function stripFootnoteRegion(text) {
+  const m = text.match(FOOTNOTE_MARKER);
+  return m ? text.slice(0, m.index) : text;
+}
+
+// "Serving Size 1 oz (28g/About 12 chips)" etc. commonly contains a
+// gram/mg-shaped number that isn't a nutrient value at all. Left in the
+// fuzzy-fallback candidate pool it can get grabbed by a positional guess
+// for whichever nutrient is still unmatched (seen: "28g" from serving size
+// getting assigned to "added sugars" on a label that doesn't even print
+// that line). Blank it out — same length, so match indices elsewhere in
+// the text are unaffected — before candidates are collected.
+function blankServingSizeLine(text) {
+  return text.replace(/serving size[^\n]*/i, (m) => ' '.repeat(m.length));
+}
+
 // Order nutrients normally appear top-to-bottom on a US/India-style label.
 // Used only as a last-resort positional fallback (Tier C below) when a
 // number can't be tied to any label text at all.
@@ -113,8 +141,24 @@ function fuzzyLabelScore(context, phrase) {
 //     closest remaining unclaimed number is assigned by the label's usual
 //     top-to-bottom order — always picks the closest candidate rather than
 //     leaving the field empty, but flagged as low-confidence for review.
+// Same digit-adjacent O/l fixes as normalizeOcrText, but WITHOUT the
+// whitespace-collapsing/trim step — this version must stay exactly the
+// same length as the input so its character indices keep lining up with
+// claimedRanges (computed against the un-normalized text). Using
+// normalizeOcrText's whitespace-collapsing version here previously shifted
+// every index after the first run of multiple spaces/newlines, which made
+// already-claimed numbers (e.g. "Total Fat 8g") look unclaimed again and
+// get re-grabbed by a different nutrient's fuzzy match.
+function normalizeDigitsPreserveLength(text) {
+  return text
+    .replace(/[oO](?=\d)/g, '0')
+    .replace(/(?<=\d)[oO]/g, '0')
+    .replace(/[lI](?=\d)/g, '1')
+    .replace(/(?<=\d)[lI]/g, '1');
+}
+
 function fuzzyFillMissing(text, missingKeys, claimedRanges) {
-  const normalized = normalizeOcrText(text);
+  const normalized = normalizeDigitsPreserveLength(text);
   const isClaimed = (idx) => claimedRanges.some(([s, e]) => idx >= s && idx < e);
 
   const candRegex = /([0-9]+(?:\.[0-9]+)?)\s*(g|mg)\b/gi;
@@ -208,8 +252,13 @@ function parseNutrition(text) {
   const corrections = [];
   const claimedRanges = [];
 
+  // Never let the footnote's generic 2,000/2,500-calorie reference table
+  // (same nutrient names, different — unrelated — numbers) feed into
+  // extraction. See stripFootnoteRegion's comment above.
+  const searchText = stripFootnoteRegion(text);
+
   for (const [key, pattern] of Object.entries(PATTERNS)) {
-    const match = text.match(pattern);
+    const match = searchText.match(pattern);
     if (!match) continue;
 
     const { value: rawValue, fixes } = analyzeNum(match[1]);
@@ -233,7 +282,7 @@ function parseNutrition(text) {
     let value = rawValue;
     let dvNote = null;
     if (key in DAILY_VALUES) {
-      const window = text.slice(match.index + match[0].length, match.index + match[0].length + 15);
+      const window = searchText.slice(match.index + match[0].length, match.index + match[0].length + 15);
       const pctMatch = window.match(/(\d{1,3})\s*%/);
       if (pctMatch) {
         const declaredPct = parseFloat(pctMatch[1]);
@@ -282,13 +331,13 @@ function parseNutrition(text) {
   // than leaving it out — see fuzzyFillMissing for the two fallback tiers.
   const missingKeys = NUTRIENT_ORDER.filter((k) => !(k in data) && k !== 'calories');
   if (missingKeys.length) {
-    for (const r of fuzzyFillMissing(text, missingKeys, claimedRanges)) {
+    for (const r of fuzzyFillMissing(blankServingSizeLine(searchText), missingKeys, claimedRanges)) {
       data[r.field] = r.value;
       corrections.push(r.correction);
     }
   }
 
-  const servingMatch = text.match(/serving size\s*([^\n]+)/i);
+  const servingMatch = searchText.match(/serving size\s*([^\n]+)/i);
   if (servingMatch) data.serving_size = servingMatch[1].trim();
 
   if (corrections.length) data.corrections = corrections;
