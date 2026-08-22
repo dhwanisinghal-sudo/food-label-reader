@@ -93,6 +93,19 @@ app.post('/api/analyze', uploadFields, async (req, res) => {
     const extractedText = await tesseract.recognize(filePath, TESSERACT_CONFIG);
 
     const nutrition = parseNutrition(extractedText);
+
+    // parseNutrition tracks every OCR-digit-fix, %DV cross-check, and
+    // fuzzy/positional guess it made internally so the values it returns
+    // are as accurate as possible. That detail is for us to debug/audit
+    // with, not for the end user to see — log it server-side and strip it
+    // out before anything goes back to the client.
+    const nutritionCorrections = nutrition.corrections || null;
+    if (nutritionCorrections) {
+      console.log(`[nutrition parser] ${nutritionCorrections.length} internal correction(s) applied:`,
+        JSON.stringify(nutritionCorrections));
+      delete nutrition.corrections;
+    }
+
     let ingredients = parseIngredients(extractedText);
     let ingredientsSource = ingredients.length ? 'main_photo' : null;
 
