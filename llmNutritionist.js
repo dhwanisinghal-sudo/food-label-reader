@@ -192,6 +192,7 @@ async function getLLMAnalysis(nutritionData, dvPercent, ingredients, conditions 
 
     if (!response.ok) {
       const errText = await response.text();
+      console.error(`[llmNutritionist] HF API call failed — status ${response.status}, model ${HF_MODEL}: ${errText.slice(0, 500)}`);
       return { error: `HF API error (${response.status}): ${errText.slice(0, 200)}` };
     }
 
