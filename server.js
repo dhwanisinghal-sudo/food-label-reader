@@ -12,6 +12,18 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const tesseract = require('node-tesseract-ocr');
+const sharp = require('sharp');
+
+// A stray unhandled promise rejection anywhere in the process (not just
+// inside /api/analyze) would otherwise terminate the whole Node process on
+// Node 15+ — which looks like a random 502 to the client with nothing
+// useful in the request-level try/catch. Log and survive instead of dying.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection (process kept alive):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (process kept alive):', err);
+});
 
 const {
   parseNutrition, parseIngredients, detectAllergens, detectAdditives,
@@ -49,6 +61,23 @@ if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
 }
 
 const TESSERACT_CONFIG = { lang: 'eng', oem: 1, psm: 3 };
+
+// Phone-camera label photos routinely come in at 3000-4000px per side and
+// several MB — tesseract's memory use scales with pixel count, and on a
+// small instance (e.g. Render's free 512MB tier) that's enough to get the
+// whole container OOM-killed mid-request, which surfaces to the client as
+// a bare 502 with no application-level error to catch. Downscaling to a
+// resolution that's still plenty sharp for label text (long edge capped at
+// 2000px) cuts memory/CPU use substantially without hurting OCR accuracy.
+async function preprocessForOcr(filePath) {
+  const outPath = `${filePath}-ocr.jpg`;
+  await sharp(filePath)
+    .rotate() // apply EXIF orientation so sideways/upside-down photos read correctly
+    .resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 88 })
+    .toFile(outPath);
+  return outPath;
+}
 
 app.get('/', (req, res) => {
   const indexPath = path.join(__dirname, 'index.html');
@@ -90,6 +119,8 @@ app.post('/api/analyze', uploadFields, async (req, res) => {
 
   const filePath = mainFile.path;
   const ingredientsFilePath = ingredientsFile ? ingredientsFile.path : null;
+  let ocrFilePath = null;
+  let ingredientsOcrFilePath = null;
 
   let conditions = [];
   try {
@@ -99,7 +130,8 @@ app.post('/api/analyze', uploadFields, async (req, res) => {
   }
 
   try {
-    const extractedText = await tesseract.recognize(filePath, TESSERACT_CONFIG);
+    ocrFilePath = await preprocessForOcr(filePath);
+    const extractedText = await tesseract.recognize(ocrFilePath, TESSERACT_CONFIG);
 
     const nutrition = parseNutrition(extractedText);
 
@@ -123,7 +155,8 @@ app.post('/api/analyze', uploadFields, async (req, res) => {
     // dedicated ingredients photo was provided, OCR that separately and
     // parse ingredients from it instead.
     if (ingredients.length === 0 && ingredientsFilePath) {
-      const ingredientsText = await tesseract.recognize(ingredientsFilePath, TESSERACT_CONFIG);
+      ingredientsOcrFilePath = await preprocessForOcr(ingredientsFilePath);
+      const ingredientsText = await tesseract.recognize(ingredientsOcrFilePath, TESSERACT_CONFIG);
       const fromSecondPhoto = parseIngredients(ingredientsText);
       if (fromSecondPhoto.length) {
         ingredients = fromSecondPhoto;
@@ -198,6 +231,8 @@ app.post('/api/analyze', uploadFields, async (req, res) => {
   } finally {
     fs.unlink(filePath, () => {});
     if (ingredientsFilePath) fs.unlink(ingredientsFilePath, () => {});
+    if (ocrFilePath) fs.unlink(ocrFilePath, () => {});
+    if (ingredientsOcrFilePath) fs.unlink(ingredientsOcrFilePath, () => {});
   }
 });
 
