@@ -15,6 +15,7 @@ const scanHistorySchema = new mongoose.Schema({
   ingredientsSource: { type: String, default: null },
   allergens: { type: mongoose.Schema.Types.Mixed, default: {} },
   additives: { type: mongoose.Schema.Types.Mixed, default: {} },
+  dietCompatibility: { type: mongoose.Schema.Types.Mixed, default: null },
   healthScore: { type: mongoose.Schema.Types.Mixed, default: {} },
   healthAnalysis: { type: String, default: '' },
   conditions: { type: [String], default: [] },
