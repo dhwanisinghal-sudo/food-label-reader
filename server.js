@@ -27,7 +27,7 @@ process.on('uncaughtException', (err) => {
 
 const {
   parseNutrition, parseIngredients, detectAllergens, detectAdditives,
-  calculateDailyValuePercent, calculateHealthScore,
+  calculateDailyValuePercent, calculateHealthScore, checkAllDietCompatibility,
 } = require('./nutritionParser');
 const { getLLMAnalysis, ruleBasedFallback } = require('./llmNutritionist');
 const { readBarcode } = require('./barcodeReader');
@@ -229,6 +229,10 @@ app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
     const allergens = detectAllergens(ingredients);
     const additives = detectAdditives(ingredients);
     const dvPercent = calculateDailyValuePercent(nutrition);
+    // null (not an empty per-diet object) when no ingredients were parsed —
+    // the frontend treats null as "can't tell, no ingredients list found"
+    // rather than showing every diet tag as falsely compatible.
+    const dietCompatibility = checkAllDietCompatibility(nutrition, ingredients);
 
     // Barcode/OpenFoodFacts lookup runs BEFORE scoring now (it used to run
     // after), so the NOVA processing group — when available — can feed into
@@ -272,6 +276,7 @@ app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
       ingredientsSource,
       allergens,
       additives,
+      dietCompatibility,
       healthScore,
       healthAnalysis,
       conditions,
