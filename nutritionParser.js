@@ -2,8 +2,17 @@
  * nutritionParser.js
  * Ported from the Python notebook logic — same OCR-misread fixes:
  *  - digit/letter confusion (0<->O, l<->1)
- *  - unit char fused into the number (e.g. "36g" OCR'd as "369")
+ *  - unit char fused into the number (e.g. "8g" OCR'd as "89", "2g" as "29")
  *  - %DV cross-check to self-correct garbled amounts
+ *
+ * Verified against real Tesseract output (not just assumed OCR noise): ran
+ * the actual server preprocessing pipeline (sharp resize->2000px, jpeg q88)
+ * + `tesseract --psm 3 --oem 1` against a real nutrition label photo. Real
+ * output included lines like "Total Fat 89 12%", "Total Carbohydrate 189",
+ * "Protein 29" — Tesseract is fusing the "g" unit glyph into the number as
+ * a trailing "9" far more often than it was previously given credit for.
+ * The old unit classes ([g)], [g3]) had no tolerance for that at all, so
+ * those fields silently failed to match and showed as "Not detected".
  */
 
 const DAILY_VALUES = {
@@ -21,18 +30,30 @@ const PLAUSIBLE_RANGE = {
 
 const NUM = '([0-9OoIl]+\\.?[0-9]*)';
 
+// Gram unit: real "g", a stray ")" from column formatting, OR the digits
+// "9"/"3" that Tesseract commonly substitutes for a lowercase "g" glyph
+// (confirmed via direct OCR testing — see header comment). Because NUM is
+// greedy, the regex engine only backtracks into treating a trailing digit
+// as "actually the unit char" when the strict [g)] read fails, so adding
+// 9/3 here does not cause any legitimate multi-digit number to be
+// truncated — a real "19g" still matches "19" via the literal g branch
+// before backtracking would ever be attempted.
+const G_UNIT = '[g)93]';
+// mg unit: tolerate the same g->9 confusion in "mg".
+const MG_UNIT = 'm[ga9]';
+
 const PATTERNS = {
   calories: new RegExp('calories\\s*' + NUM, 'i'),
-  total_fat_g: new RegExp('total fat\\s*' + NUM + '\\s*[g)]', 'i'),
-  saturated_fat_g: new RegExp('saturated fat\\s*' + NUM + '\\s*[g)]', 'i'),
-  trans_fat_g: new RegExp('trans fat\\s*' + NUM + '\\s*[g)]', 'i'),
-  cholesterol_mg: new RegExp('cholesterol\\s*' + NUM + '\\s*m[ga]', 'i'),
-  sodium_mg: new RegExp('sodium\\s*' + NUM + '\\s*m[ga]', 'i'),
-  total_carbs_g: new RegExp('total carboh[yi]d[nr]ate\\s*' + NUM + '\\s*[g)]', 'i'),
-  fiber_g: new RegExp('(?:dietary\\s*)?fiber\\s*(?:less than\\s*)?' + NUM + '\\s*[g)]?', 'i'),
-  total_sugars_g: new RegExp('(?:total\\s+)?sugars\\s*(?:less than\\s*)?' + NUM + '\\s*[g)]', 'i'),
-  added_sugars_g: new RegExp('includes\\s*' + NUM + '\\s*[g)]\\s*added sugars', 'i'),
-  protein_g: new RegExp('protein\\s*' + NUM + '\\s*[g3]', 'i'),
+  total_fat_g: new RegExp('total fat\\s*' + NUM + '\\s*' + G_UNIT, 'i'),
+  saturated_fat_g: new RegExp('saturated fat\\s*' + NUM + '\\s*' + G_UNIT, 'i'),
+  trans_fat_g: new RegExp('trans fat\\s*' + NUM + '\\s*' + G_UNIT, 'i'),
+  cholesterol_mg: new RegExp('cholesterol\\s*' + NUM + '\\s*' + MG_UNIT, 'i'),
+  sodium_mg: new RegExp('sodium\\s*' + NUM + '\\s*' + MG_UNIT, 'i'),
+  total_carbs_g: new RegExp('total carboh[yi]d[nr]ate\\s*' + NUM + '\\s*' + G_UNIT, 'i'),
+  fiber_g: new RegExp('(?:dietary\\s*)?fiber\\s*(?:less than\\s*)?' + NUM + '\\s*' + G_UNIT, 'i'),
+  total_sugars_g: new RegExp('(?:total\\s+)?sugars\\s*(?:less than\\s*)?' + NUM + '\\s*' + G_UNIT, 'i'),
+  added_sugars_g: new RegExp('includes\\s*' + NUM + '\\s*' + G_UNIT + '\\s*added sugars', 'i'),
+  protein_g: new RegExp('protein\\s*' + NUM + '\\s*' + G_UNIT, 'i'),
 };
 
 function cleanNum(raw) {
@@ -43,6 +64,7 @@ function cleanNum(raw) {
 
 function parseNutrition(text) {
   const data = {};
+  const corrections = [];
 
   for (const [key, pattern] of Object.entries(PATTERNS)) {
     const match = text.match(pattern);
@@ -55,15 +77,35 @@ function parseNutrition(text) {
     if (value < lo || value > hi) continue;
 
     if (key in DAILY_VALUES) {
-      const window = text.slice(match.index + match[0].length, match.index + match[0].length + 15);
+      // %DV lives on the SAME printed line as the amount on every real
+      // nutrition label. Bounding the lookahead window at the next
+      // newline (in addition to the old 15-char cap) stops the cross-
+      // check from reading a % that belongs to the *next* nutrient line
+      // — which is what previously turned a correctly-read "Dietary
+      // Fiber 2g" into a bogus "1.4g" by borrowing the "5%" off the
+      // following/preceding "Saturated Fat 1g 5%" line.
+      const afterMatch = text.slice(match.index + match[0].length);
+      const newlineIdx = afterMatch.indexOf('\n');
+      const windowEnd = newlineIdx === -1 ? 15 : Math.min(15, newlineIdx);
+      const window = afterMatch.slice(0, windowEnd);
       const pctMatch = window.match(/(\d{1,3})\s*%/);
       if (pctMatch) {
         const declaredPct = parseFloat(pctMatch[1]);
         const ourPct = (value / DAILY_VALUES[key]) * 100;
         if (declaredPct > 0 && ourPct > 0) {
           const ratio = ourPct / declaredPct;
-          if (ratio > 2.5 || ratio < 0.4) {
-            value = Math.round((declaredPct / 100) * DAILY_VALUES[key] * 100) / 100;
+          // Only override on a genuinely implausible mismatch (>4x or
+          // <0.25x). The old 2.5x/0.4x thresholds were tight enough that
+          // ordinary rounding differences between our computed %DV and
+          // the label's own printed %DV (which itself rounds) could
+          // trigger a "correction" that actually replaced a correct
+          // reading with a wrong one derived from a misattributed %.
+          if (ratio > 4 || ratio < 0.25) {
+            const corrected = Math.round((declaredPct / 100) * DAILY_VALUES[key] * 100) / 100;
+            corrections.push({
+              field: key, from: value, to: corrected, reason: `%DV cross-check (declared ${declaredPct}%)`,
+            });
+            value = corrected;
           }
         }
       }
@@ -74,6 +116,8 @@ function parseNutrition(text) {
 
   const servingMatch = text.match(/serving size\s*([^\n]+)/i);
   if (servingMatch) data.serving_size = servingMatch[1].trim();
+
+  if (corrections.length) data.corrections = corrections;
 
   return data;
 }
@@ -102,6 +146,10 @@ function parseIngredients(text) {
 
   return splitTopLevelCommas(cleaned)
     .map((item) => item.trim().replace(/^\.+|\.+$/g, ''))
+    // Labels routinely write the final item as "..., and Last Ingredient."
+    // — strip a leading conjunction so it doesn't get glued onto the
+    // ingredient name itself (e.g. "and Disodium Guanylate").
+    .map((item) => item.replace(/^(?:and|or)\s+/i, '').trim())
     .filter((item) => item.length > 0 && item.length <= 120);
 }
 
