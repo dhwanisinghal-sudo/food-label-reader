@@ -30,7 +30,7 @@ const PATTERNS = {
   sodium_mg: new RegExp('sodium\\s*' + NUM + '\\s*m[ga]', 'i'),
   total_carbs_g: new RegExp('total carboh[yi]d[nr]ate\\s*' + NUM + '\\s*[g)]', 'i'),
   fiber_g: new RegExp('(?:dietary\\s*)?fiber\\s*(?:less than\\s*)?' + NUM + '\\s*[g)]?', 'i'),
-  total_sugars_g: new RegExp('(?:total\\s+)?sugars\\s*' + NUM + '\\s*[g)]', 'i'),
+  total_sugars_g: new RegExp('(?:total\\s+)?sugars\\s*(?:less than\\s*)?' + NUM + '\\s*[g)]', 'i'),
   added_sugars_g: new RegExp('includes\\s*' + NUM + '\\s*[g)]\\s*added sugars', 'i'),
   protein_g: new RegExp('protein\\s*' + NUM + '\\s*[g3]', 'i'),
 };
