@@ -230,6 +230,75 @@ function detectAllergens(ingredients) {
   return detected;
 }
 
+// ---- Diet compatibility (ported from the notebook's check_*_compatibility
+// functions) — all keyword-based against the ingredient list, same approach
+// as detectAllergens/detectAdditives above.
+const VEGAN_CONFLICT_KEYWORDS = ['milk', 'whey', 'casein', 'egg', 'honey', 'gelatin', 'lard', 'meat', 'fish', 'chicken', 'beef', 'pork'];
+const VEGETARIAN_CONFLICT_KEYWORDS = ['gelatin', 'lard', 'meat', 'fish', 'chicken', 'beef', 'pork', 'rennet'];
+const NON_HALAL_KOSHER_KEYWORDS = ['pork', 'lard', 'gelatin', 'alcohol', 'wine', 'rum', 'bacon', 'ham'];
+const HIGH_CARB_KEYWORDS = ['sugar', 'corn syrup', 'wheat flour', 'rice', 'maltodextrin', 'dextrose'];
+const PALEO_CONFLICT_KEYWORDS = ['sugar', 'wheat', 'corn', 'dairy', 'milk', 'legume', 'soy', 'peanut', 'artificial'];
+const FODMAP_CONFLICT_KEYWORDS = ['garlic', 'onion', 'honey', 'high fructose corn syrup', 'wheat', 'inulin', 'sorbitol', 'xylitol'];
+
+function checkDietCompatibility(ingredients) {
+  const text = ingredients.join(' ').toLowerCase();
+  const veganConflicts = VEGAN_CONFLICT_KEYWORDS.filter((kw) => text.includes(kw));
+  const vegetarianConflicts = VEGETARIAN_CONFLICT_KEYWORDS.filter((kw) => text.includes(kw));
+  return {
+    veganFriendly: veganConflicts.length === 0,
+    veganConflicts,
+    vegetarianFriendly: vegetarianConflicts.length === 0,
+    vegetarianConflicts,
+  };
+}
+
+function checkHalalKosher(ingredients) {
+  const text = ingredients.join(' ').toLowerCase();
+  const conflicts = NON_HALAL_KOSHER_KEYWORDS.filter((kw) => text.includes(kw));
+  return { halalKosherSafe: conflicts.length === 0, conflicts };
+}
+
+function checkKetoCompatibility(nutrition, ingredients) {
+  const carbs = nutrition.total_carbs_g || 0;
+  const fiber = nutrition.fiber_g || 0;
+  const netCarbs = Math.max(carbs - fiber, 0);
+  const text = ingredients.join(' ').toLowerCase();
+  const conflicts = HIGH_CARB_KEYWORDS.filter((kw) => text.includes(kw));
+  return { ketoFriendly: netCarbs <= 10 && conflicts.length === 0, netCarbsG: netCarbs, conflicts };
+}
+
+function checkPaleoCompatibility(ingredients) {
+  const text = ingredients.join(' ').toLowerCase();
+  const conflicts = PALEO_CONFLICT_KEYWORDS.filter((kw) => text.includes(kw));
+  return { paleoFriendly: conflicts.length === 0, conflicts };
+}
+
+function checkFodmapCompatibility(ingredients) {
+  const text = ingredients.join(' ').toLowerCase();
+  const conflicts = FODMAP_CONFLICT_KEYWORDS.filter((kw) => text.includes(kw));
+  return { lowFodmap: conflicts.length === 0, conflicts };
+}
+
+// Runs all five checks together and returns one compact summary — this is
+// the function server.js calls; the individual check* functions above are
+// exported too in case any of them are useful standalone.
+function checkAllDietCompatibility(nutrition, ingredients) {
+  if (!ingredients || ingredients.length === 0) return null;
+  const diet = checkDietCompatibility(ingredients);
+  const halalKosher = checkHalalKosher(ingredients);
+  const keto = checkKetoCompatibility(nutrition || {}, ingredients);
+  const paleo = checkPaleoCompatibility(ingredients);
+  const fodmap = checkFodmapCompatibility(ingredients);
+  return {
+    vegan: { friendly: diet.veganFriendly, conflicts: diet.veganConflicts },
+    vegetarian: { friendly: diet.vegetarianFriendly, conflicts: diet.vegetarianConflicts },
+    halalKosher: { friendly: halalKosher.halalKosherSafe, conflicts: halalKosher.conflicts },
+    keto: { friendly: keto.ketoFriendly, netCarbsG: keto.netCarbsG, conflicts: keto.conflicts },
+    paleo: { friendly: paleo.paleoFriendly, conflicts: paleo.conflicts },
+    lowFodmap: { friendly: fodmap.lowFodmap, conflicts: fodmap.conflicts },
+  };
+}
+
 function calculateDailyValuePercent(nutrition) {
   const dv = {};
   for (const [key, amount] of Object.entries(nutrition)) {
@@ -332,5 +401,7 @@ function calculateHealthScore(dv, nutrition, additives = {}, novaGroup = null) {
 module.exports = {
   parseNutrition, parseIngredients, detectAllergens, detectAdditives,
   calculateDailyValuePercent, calculateHealthScore,
+  checkDietCompatibility, checkHalalKosher, checkKetoCompatibility,
+  checkPaleoCompatibility, checkFodmapCompatibility, checkAllDietCompatibility,
   DAILY_VALUES, cleanNum, splitTopLevelCommas,
 };
