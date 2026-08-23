@@ -269,26 +269,41 @@ function ruleBasedFallback(dvPercent, conditions = [], ingredients = [], additiv
   }
   if ((dvPercent.protein_g || 0) >= 15) flags.push('✅ Good protein content.');
 
-  if (conditions.includes('diabetes') && (dvPercent.total_sugars_g || 0) >= 15) {
-    flags.push('🩺 Diabetes note: sugar content here may cause a notable blood sugar spike.');
-  }
-  if (conditions.includes('high_bp') && (dvPercent.sodium_mg || 0) >= 15) {
-    flags.push('🩺 High BP note: sodium level is a concern for blood pressure management.');
-  }
-  if (conditions.includes('high_cholesterol') && (dvPercent.saturated_fat_g || 0) >= 15) {
-    flags.push('🩺 Cholesterol note: saturated fat content may impact cholesterol levels.');
-  }
-  if (conditions.includes('kidney_disease') && (dvPercent.sodium_mg || 0) >= 15) {
-    flags.push('🩺 Kidney note: sodium (and check for potassium/phosphorus additives) may be a concern.');
-  }
-  if (conditions.includes('heart_disease') && ((dvPercent.saturated_fat_g || 0) >= 15 || (dvPercent.sodium_mg || 0) >= 15)) {
-    flags.push('🩺 Heart health note: saturated fat and/or sodium levels here are worth watching.');
-  }
-  if (conditions.includes('weight_management') && (dvPercent.calories || 0) >= 20) {
-    flags.push('🩺 Weight management note: this is a calorie-dense item relative to daily needs — mind portion size.');
-  }
-  if (conditions.includes('pregnancy') && (dvPercent.sodium_mg || 0) >= 15) {
-    flags.push('🩺 Pregnancy note: sodium level here is on the higher side — moderate intake recommended.');
+  // Map each condition to the nutrient(s) it actually needs to assess risk.
+  // `dvPercent` only contains a key if that nutrient was successfully parsed
+  // (see calculateDailyValuePercent) — so "key not in dvPercent" means
+  // "we don't know", which is a different situation from "this nutrient is
+  // present at 0%". Treating the two the same (via `|| 0`) let a missing
+  // sugar reading silently produce zero warning for a diabetic user instead
+  // of surfacing that the check couldn't be done.
+  const conditionNutrientChecks = [
+    ['diabetes', ['total_sugars_g'], (dv) => dv.total_sugars_g >= 15,
+      '🩺 Diabetes note: sugar content here may cause a notable blood sugar spike.'],
+    ['high_bp', ['sodium_mg'], (dv) => dv.sodium_mg >= 15,
+      '🩺 High BP note: sodium level is a concern for blood pressure management.'],
+    ['high_cholesterol', ['saturated_fat_g'], (dv) => dv.saturated_fat_g >= 15,
+      '🩺 Cholesterol note: saturated fat content may impact cholesterol levels.'],
+    ['kidney_disease', ['sodium_mg'], (dv) => dv.sodium_mg >= 15,
+      '🩺 Kidney note: sodium (and check for potassium/phosphorus additives) may be a concern.'],
+    ['heart_disease', ['saturated_fat_g', 'sodium_mg'], (dv) => dv.saturated_fat_g >= 15 || dv.sodium_mg >= 15,
+      '🩺 Heart health note: saturated fat and/or sodium levels here are worth watching.'],
+    ['weight_management', ['calories'], (dv) => dv.calories >= 20,
+      '🩺 Weight management note: this is a calorie-dense item relative to daily needs — mind portion size.'],
+    ['pregnancy', ['sodium_mg'], (dv) => dv.sodium_mg >= 15,
+      '🩺 Pregnancy note: sodium level here is on the higher side — moderate intake recommended.'],
+  ];
+
+  for (const [condition, requiredKeys, test, message] of conditionNutrientChecks) {
+    if (!conditions.includes(condition)) continue;
+    const missingKeys = requiredKeys.filter((k) => !(k in dvPercent));
+    if (missingKeys.length === requiredKeys.length) {
+      // None of the nutrients this check needs were parsed off the label —
+      // say so explicitly instead of silently passing the condition.
+      const names = missingKeys.map((k) => k.replace(/_g|_mg/g, '').replace(/_/g, ' ')).join('/');
+      flags.push(`⚠️ ${CONDITION_LABELS[condition]} note: ${names} wasn't detected on this label — can't assess this risk, check the physical label.`);
+    } else if (test(dvPercent)) {
+      flags.push(message);
+    }
   }
 
   const ingredientsText = (ingredients || []).join(' ').toLowerCase();
