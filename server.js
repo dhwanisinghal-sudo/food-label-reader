@@ -34,6 +34,8 @@ const { readBarcode } = require('./barcodeReader');
 const { lookupProduct } = require('./openFoodFacts');
 const { connectDB, isDbConnected } = require('./db');
 const ScanHistory = require('./models/ScanHistory');
+const User = require('./models/User');
+const { issueToken, requireAuth } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -96,20 +98,80 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Food Label Reader backend is running' });
 });
 
-app.get('/api/history', async (req, res) => {
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+app.post('/api/signup', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected. Set MONGODB_URI in .env to enable accounts.' });
+  }
+  const { email, password } = req.body || {};
+  if (!email || !EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: 'Please provide a valid email address.' });
+  }
+  if (!password || password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  }
+
+  try {
+    const existing = await User.findOne({ email: email.toLowerCase().trim() });
+    if (existing) {
+      return res.status(409).json({ error: 'An account with that email already exists. Try logging in instead.' });
+    }
+
+    const user = new User({ email });
+    await user.setPassword(password);
+    await user.save();
+
+    const token = issueToken(user);
+    res.status(201).json({ token, user: { email: user.email } });
+  } catch (err) {
+    res.status(500).json({ error: `Signup failed: ${err.message}` });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected. Set MONGODB_URI in .env to enable accounts.' });
+  }
+  const { email, password } = req.body || {};
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required.' });
+  }
+
+  try {
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    // Same generic error whether the email doesn't exist or the password is
+    // wrong — distinguishing the two lets an attacker enumerate registered
+    // emails.
+    const invalidCreds = () => res.status(401).json({ error: 'Invalid email or password.' });
+
+    if (!user) return invalidCreds();
+    const valid = await user.comparePassword(password);
+    if (!valid) return invalidCreds();
+
+    const token = issueToken(user);
+    res.json({ token, user: { email: user.email } });
+  } catch (err) {
+    res.status(500).json({ error: `Login failed: ${err.message}` });
+  }
+});
+
+app.get('/api/history', requireAuth, async (req, res) => {
   if (!isDbConnected()) {
     return res.status(503).json({ error: 'Database not connected. Set MONGODB_URI in .env to enable history.' });
   }
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
-    const scans = await ScanHistory.find().sort({ createdAt: -1 }).limit(limit);
+    // Scoped to the logged-in user only — this is what keeps one account's
+    // scans from showing up in another account's history.
+    const scans = await ScanHistory.find({ userId: req.userId }).sort({ createdAt: -1 }).limit(limit);
     res.json({ count: scans.length, scans });
   } catch (err) {
     res.status(500).json({ error: `Failed to fetch history: ${err.message}` });
   }
 });
 
-app.post('/api/analyze', uploadFields, async (req, res) => {
+app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
   const mainFile = req.files && req.files.image && req.files.image[0];
   const ingredientsFile = req.files && req.files.ingredientsImage && req.files.ingredientsImage[0];
 
@@ -221,7 +283,7 @@ app.post('/api/analyze', uploadFields, async (req, res) => {
     res.json(responsePayload);
 
     if (isDbConnected()) {
-      ScanHistory.create(responsePayload).catch((err) => {
+      ScanHistory.create({ ...responsePayload, userId: req.userId }).catch((err) => {
         console.error('Failed to save scan to history:', err.message);
       });
     }
