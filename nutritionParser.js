@@ -89,7 +89,7 @@ function parseIngredients(text) {
 
   const stopPatterns = [
     /nutrition facts/i, /serving size/i,
-    /contains\s+(milk|soy|wheat|egg|nuts?|tree nuts?)/i,
+    /contains\s*:?\s*-?\s*(milk|soy|wheat|egg|nuts?|tree nuts?)/i,
     /percent daily values/i, /calories from fat/i, /%\s*daily value/i,
   ];
   let cutIdx = cleaned.length;
@@ -100,10 +100,34 @@ function parseIngredients(text) {
   cleaned = cleaned.slice(0, cutIdx).trim();
   cleaned = cleaned.replace(/\s*\n\s*/g, ' ');
 
-  return cleaned
-    .split(',')
+  return splitTopLevelCommas(cleaned)
     .map((item) => item.trim().replace(/^\.+|\.+$/g, ''))
-    .filter((item) => item.length > 0 && item.length <= 60);
+    .filter((item) => item.length > 0 && item.length <= 120);
+}
+
+// Splits on ',' but ONLY at bracket depth 0, so a sub-ingredient list like
+// "Vegetable Oil (Corn, Canola, Soybean and/or Sunflower Oil)" or
+// "Cheddar Cheese [Milk, Cheese Cultures, Salt, Enzymes]" stays as ONE
+// ingredient instead of being torn into separate top-level entries at every
+// comma the sub-list happens to contain. Handles both () and [] since real
+// labels use either for sub-ingredients/allergen callouts, and tracks depth
+// so nested brackets don't close early.
+function splitTopLevelCommas(text) {
+  const items = [];
+  let current = '';
+  let depth = 0;
+  for (const char of text) {
+    if (char === '(' || char === '[') depth++;
+    else if (char === ')' || char === ']') depth = Math.max(0, depth - 1);
+    if (char === ',' && depth === 0) {
+      items.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) items.push(current);
+  return items;
 }
 
 const ALLERGEN_KEYWORDS = {
@@ -260,5 +284,5 @@ function calculateHealthScore(dv, nutrition, additives = {}, novaGroup = null) {
 module.exports = {
   parseNutrition, parseIngredients, detectAllergens, detectAdditives,
   calculateDailyValuePercent, calculateHealthScore,
-  DAILY_VALUES, cleanNum,
+  DAILY_VALUES, cleanNum, splitTopLevelCommas,
 };
