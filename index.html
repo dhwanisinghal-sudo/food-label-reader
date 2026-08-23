@@ -1,0 +1,1606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Food Label Reader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@500;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+  :root{
+    --bg1: black;
+    --bg2: darkslategray;
+    --ink: whitesmoke;
+    --paper: rgb(24,30,28);
+    --paper2: rgb(30,38,35);
+    --muted: darkgray;
+    --good: mediumseagreen;
+    --good-soft: rgba(60,179,113,0.15);
+    --ok: orange;
+    --ok-soft: rgba(255,165,0,0.15);
+    --bad: tomato;
+    --bad-soft: rgba(255,99,71,0.15);
+    --accent: mediumspringgreen;
+    --border: rgb(50,58,55);
+    --shadow: rgba(0,0,0,0.5);
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    min-height:100vh;
+    background: radial-gradient(circle at top, var(--bg2) 0%, var(--bg1) 60%);
+    color:var(--ink);
+    font-family:'Inter',system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{
+    max-width:640px;
+    margin:0 auto;
+    padding:56px 20px 90px;
+  }
+  .eyebrow{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--accent);
+    background: var(--paper);
+    border:1px solid var(--border);
+    padding:6px 12px;
+    border-radius:20px;
+    margin:0 0 18px;
+  }
+  h1{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:800;
+    font-size:44px;
+    letter-spacing:-.01em;
+    margin:0 0 10px;
+    background: linear-gradient(100deg, whitesmoke, mediumspringgreen);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .sub{
+    color:var(--muted);
+    font-size:15.5px;
+    margin:0 0 40px;
+    max-width:48ch;
+    line-height:1.6;
+  }
+
+  /* Upload zone */
+  .dropzone{
+    display:block;
+    border:2.5px dashed var(--border);
+    border-radius:20px;
+    background: var(--paper);
+    padding:40px 20px;
+    text-align:center;
+    cursor:pointer;
+    transition: all .25s ease;
+    box-shadow: 0 8px 24px var(--shadow);
+  }
+  .dropzone:hover, .dropzone.drag{
+    border-color: mediumseagreen;
+    background: var(--paper2);
+    transform: translateY(-2px);
+    box-shadow: 0 14px 32px var(--shadow);
+  }
+  .dropzone input{display:none;}
+  .dz-icon{
+    font-size:34px;
+    margin-bottom:10px;
+    display:block;
+    filter: grayscale(0.2);
+  }
+  .dz-title{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:700;
+    font-size:19px;
+    margin:0 0 4px;
+    color: var(--ink);
+  }
+  .dz-sub{
+    font-size:13px;
+    color:var(--muted);
+    margin:0;
+  }
+  .preview-thumb{
+    max-width:130px;
+    max-height:130px;
+    border-radius:14px;
+    border:3px solid var(--border);
+    box-shadow: 0 6px 18px var(--shadow);
+    margin-bottom:14px;
+  }
+
+  .conditions-panel{
+    margin-top:18px;
+  }
+  .conditions-label{
+    font-size:13px;
+    color:var(--muted);
+    margin:0 0 10px;
+  }
+  .chip-group{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+  .chip{
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    font-size:13.5px;
+    color:var(--ink);
+    background:var(--paper);
+    border:1.5px solid var(--border);
+    padding:9px 14px;
+    border-radius:20px;
+    cursor:pointer;
+    transition: all .15s ease;
+    user-select:none;
+  }
+  .chip:hover{border-color:mediumseagreen;}
+  .chip input{accent-color:mediumseagreen; cursor:pointer;}
+  .chip.checked{border-color:mediumseagreen; background:var(--good-soft);}
+
+  button.scan{
+    display:block;
+    width:100%;
+    margin-top:18px;
+    padding:16px;
+    background: linear-gradient(100deg, seagreen, mediumseagreen);
+    color: black;
+    border:none;
+    border-radius:14px;
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:800;
+    font-size:17px;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+    cursor:pointer;
+    box-shadow: 0 10px 24px var(--shadow);
+    transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+  }
+  button.scan:disabled{opacity:.35;cursor:default;box-shadow:none;}
+  button.scan:not(:disabled):hover{transform: translateY(-2px); box-shadow: 0 14px 30px rgba(60,179,113,0.35);}
+  button.scan:not(:disabled):active{transform: translateY(0);}
+
+  .status{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:13px;
+    color:var(--muted);
+    margin-top:16px;
+    min-height:18px;
+    text-align:center;
+  }
+  .status.err{color:var(--bad);}
+
+  /* Results — nutrition label replica, dark glossed up */
+  #results{display:none;margin-top:44px; animation: fadeUp .5s ease;}
+  @keyframes fadeUp{
+    from{opacity:0; transform: translateY(14px);}
+    to{opacity:1; transform: translateY(0);}
+  }
+  .label-panel{
+    background: var(--paper);
+    border:1px solid var(--border);
+    border-radius:20px;
+    overflow:hidden;
+    box-shadow: 0 16px 40px var(--shadow);
+  }
+  .label-head{
+    padding:20px 22px 14px;
+    background: linear-gradient(100deg, rgb(10,14,13), seagreen);
+  }
+  .label-head h2{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:800;
+    font-size:30px;
+    margin:0;
+    text-transform:uppercase;
+    letter-spacing:-.01em;
+    color: whitesmoke;
+  }
+  .serving-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    padding:12px 22px;
+    border-bottom:1px solid var(--border);
+    font-size:14px;
+    color: var(--muted);
+  }
+  .cal-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    padding:14px 22px;
+    background: var(--paper2);
+    border-bottom:1px solid var(--border);
+  }
+  .cal-row .label{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:700;
+    font-size:19px;
+    text-transform:uppercase;
+    color: var(--ink);
+  }
+  .cal-row .num{
+    font-family:'IBM Plex Mono',monospace;
+    font-weight:600;
+    font-size:32px;
+    color: mediumspringgreen;
+  }
+  .dv-head{
+    text-align:right;
+    padding:10px 22px 4px;
+    font-size:11px;
+    font-weight:700;
+    color: var(--muted);
+    text-transform:uppercase;
+    letter-spacing:.05em;
+  }
+  .nutrient-row{
+    display:flex;
+    justify-content:space-between;
+    padding:10px 22px;
+    border-bottom:1px solid rgb(38,44,42);
+    font-size:14px;
+    transition: background .15s ease;
+  }
+  .nutrient-row:hover{background: var(--paper2);}
+  .nutrient-row .name{font-weight:500; color: var(--ink);}
+  .nutrient-row .amt{
+    font-family:'IBM Plex Mono',monospace;
+    color:var(--muted);
+    margin-right:12px;
+  }
+  .nutrient-row .pct{
+    font-family:'IBM Plex Mono',monospace;
+    font-weight:700;
+    min-width:44px;
+    text-align:right;
+    padding:2px 8px;
+    border-radius:8px;
+  }
+  .pct.good{color:mediumseagreen; background:var(--good-soft);}
+  .pct.ok{color:orange; background:var(--ok-soft);}
+  .pct.bad{color:tomato; background:var(--bad-soft);}
+  .pct.neutral{color:var(--muted); background:rgba(255,255,255,0.05);}
+  .nutrient-row.not-detected-row .name{color:var(--muted);}
+  .not-detected{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+    font-style:italic;
+    color:var(--muted);
+    opacity:0.7;
+  }
+
+  .footnote{
+    padding:14px 22px 20px;
+    font-size:10.5px;
+    color:dimgray;
+    line-height:1.5;
+  }
+
+  /* Ingredients + allergens */
+  .ingredients-panel{
+    margin-top:26px;
+    background: var(--paper);
+    border:1px solid var(--border);
+    border-radius:18px;
+    padding:20px 22px;
+    box-shadow: 0 10px 26px var(--shadow);
+  }
+  .ingredients-panel h3{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:700;
+    font-size:16px;
+    text-transform:uppercase;
+    letter-spacing:.03em;
+    margin:0 0 12px;
+    color: var(--ink);
+  }
+  .ingredients-list{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+  }
+  .ingredient-chip{
+    font-size:13px;
+    color: var(--muted);
+    background: var(--paper2);
+    border:1px solid var(--border);
+    padding:6px 12px;
+    border-radius:14px;
+  }
+  .ingredients-empty{
+    font-size:13px;
+    color: dimgray;
+    font-style:italic;
+    margin:0 0 12px;
+  }
+  .ingredients-retry-btn{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    font-size:13px;
+    font-weight:600;
+    color: var(--ink);
+    background: var(--paper2);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:9px 14px;
+    cursor:pointer;
+    transition: border-color .15s ease;
+  }
+  .ingredients-retry-btn:hover{
+    border-color: var(--ink);
+  }
+  .ingredients-retry-status{
+    font-size:12px;
+    color: dimgray;
+    margin:8px 0 0;
+  }
+  .allergen-panel{
+    margin-top:16px;
+    background: var(--bad-soft);
+    border:1px solid rgba(255,99,71,0.35);
+    border-radius:18px;
+    padding:18px 22px;
+  }
+  .allergen-panel h3{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:700;
+    font-size:15px;
+    text-transform:uppercase;
+    letter-spacing:.03em;
+    margin:0 0 10px;
+    color: tomato;
+  }
+  .allergen-row{
+    font-size:13.5px;
+    color: var(--ink);
+    margin:4px 0;
+    line-height:1.5;
+  }
+  .allergen-row b{color: tomato;}
+
+  /* OpenFoodFacts panel */
+  .off-panel{
+    margin-top:16px;
+    background: var(--paper);
+    border:1px solid var(--border);
+    border-radius:18px;
+    padding:18px 22px;
+    box-shadow: 0 10px 26px var(--shadow);
+  }
+  .off-panel h3{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:700;
+    font-size:15px;
+    text-transform:uppercase;
+    letter-spacing:.03em;
+    margin:0 0 10px;
+    color: var(--ink);
+  }
+  .off-product{
+    font-size:13.5px;
+    color: var(--muted);
+    margin:0 0 12px;
+  }
+  .off-product b{color: var(--ink);}
+  .off-badges{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+  .off-badge{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    background: var(--paper2);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:8px 14px;
+    font-size:13px;
+    color: var(--ink);
+  }
+  .off-badge .grade{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    width:24px;
+    height:24px;
+    border-radius:50%;
+    color:#fff;
+    font-weight:700;
+    font-size:13px;
+  }
+  .off-empty{
+    font-size:13px;
+    color: dimgray;
+    font-style:italic;
+  }
+
+  /* Diet compatibility */
+  .diet-panel{
+    margin-top:16px;
+    background: var(--paper);
+    border:1px solid var(--border);
+    border-radius:18px;
+    padding:18px 22px;
+    box-shadow: 0 10px 26px var(--shadow);
+  }
+  .diet-panel h3{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:700;
+    font-size:15px;
+    text-transform:uppercase;
+    letter-spacing:.03em;
+    margin:0 0 12px;
+    color: var(--ink);
+  }
+  .diet-tags{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+  .diet-tag{
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    border-radius:14px;
+    padding:8px 14px;
+    font-size:13px;
+    font-weight:500;
+    border:1px solid var(--border);
+    cursor:default;
+  }
+  .diet-tag.ok{
+    background: var(--good-soft);
+    border-color: rgba(60,179,113,0.35);
+    color: mediumseagreen;
+  }
+  .diet-tag.conflict{
+    background: var(--bad-soft);
+    border-color: rgba(255,99,71,0.35);
+    color: tomato;
+  }
+  .diet-tag .icon{font-size:14px;}
+
+  /* Export */
+  .export-btn{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    margin-top:16px;
+    padding:11px 18px;
+    background: var(--paper);
+    border:1.5px solid var(--border);
+    color: var(--ink);
+    border-radius:12px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:13px;
+    cursor:pointer;
+  }
+  .export-btn:hover{border-color:mediumseagreen; color:mediumseagreen;}
+  .export-menu{
+    position:relative;
+    display:inline-block;
+  }
+  .export-dropdown{
+    position:absolute;
+    top:calc(100% + 6px);
+    left:0;
+    background: var(--paper);
+    border:1px solid var(--border);
+    border-radius:12px;
+    box-shadow: 0 12px 30px var(--shadow);
+    overflow:hidden;
+    z-index:10;
+    display:none;
+    min-width:160px;
+  }
+  .export-dropdown.open{display:block;}
+  .export-dropdown button{
+    display:block;
+    width:100%;
+    text-align:left;
+    padding:11px 16px;
+    background:none;
+    border:none;
+    color: var(--ink);
+    font-size:13.5px;
+    cursor:pointer;
+    font-family:'Inter',system-ui,sans-serif;
+  }
+  .export-dropdown button:hover{background: var(--paper2);}
+
+  /* Health score seal */
+  .seal-row{
+    display:flex;
+    align-items:center;
+    gap:16px;
+    margin-top:28px;
+    background:var(--paper);
+    border:1px solid var(--border);
+    padding:18px 20px;
+    border-radius:18px;
+    box-shadow: 0 10px 26px var(--shadow);
+  }
+  .seal{
+    width:68px;height:68px;
+    border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    flex-direction:column;
+    font-family:'IBM Plex Mono',monospace;
+    font-weight:700;
+    flex-shrink:0;
+    color:black;
+    box-shadow: 0 6px 16px var(--shadow);
+  }
+  .seal .n{font-size:22px;line-height:1;}
+  .seal .l{font-size:8px;letter-spacing:.06em;}
+  .seal-text .t{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:700;
+    font-size:17px;
+    text-transform:uppercase;
+    margin:0 0 3px;
+    color: var(--ink);
+  }
+  .seal-text .d{font-size:13px;color:var(--muted);margin:0;}
+
+  /* Nutritionist note */
+  .note{
+    margin-top:26px;
+    background: var(--paper);
+    border:1px solid var(--border);
+    border-radius:18px;
+    padding:22px 24px;
+    position:relative;
+    box-shadow: 0 10px 26px var(--shadow);
+    border-left: 5px solid mediumseagreen;
+  }
+  .note .tag{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px;
+    letter-spacing:.1em;
+    text-transform:uppercase;
+    color:mediumspringgreen;
+    margin:0 0 10px;
+    font-weight:600;
+  }
+  .note p{
+    margin:0;
+    font-size:15px;
+    line-height:1.7;
+    white-space:pre-wrap;
+    color: var(--ink);
+  }
+
+  .reset-link{
+    display:block;
+    margin:26px auto 0;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12.5px;
+    color:mediumspringgreen;
+    text-decoration:none;
+    cursor:pointer;
+    background: var(--paper);
+    border:1.5px solid var(--border);
+    padding:10px 18px;
+    border-radius:20px;
+    text-align:center;
+    transition: all .15s ease;
+  }
+  .reset-link:hover{background:var(--paper2); border-color: mediumseagreen; transform: translateY(-1px);}
+
+  /* Tabs */
+  .tabs{
+    display:inline-flex;
+    gap:4px;
+    background: var(--paper);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:4px;
+    margin-bottom:28px;
+  }
+  .tab-btn{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:700;
+    font-size:14px;
+    letter-spacing:.02em;
+    text-transform:uppercase;
+    color:var(--muted);
+    background:transparent;
+    border:none;
+    padding:9px 20px;
+    border-radius:10px;
+    cursor:pointer;
+    transition: all .15s ease;
+  }
+  .tab-btn:hover{color:var(--ink);}
+  .tab-btn.active{
+    color:black;
+    background: linear-gradient(100deg, seagreen, mediumseagreen);
+  }
+
+  /* History */
+  #historyView{display:none;}
+  .history-status{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:13px;
+    color:var(--muted);
+    margin:0 0 16px;
+  }
+  .history-status.err{color:var(--bad);}
+  .history-list{
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+  }
+  .history-card{
+    display:flex;
+    align-items:center;
+    gap:14px;
+    background: var(--paper);
+    border:1px solid var(--border);
+    border-radius:16px;
+    padding:14px 16px;
+    box-shadow: 0 8px 22px var(--shadow);
+  }
+  .history-thumb{
+    width:52px;height:52px;
+    flex-shrink:0;
+    border-radius:12px;
+    object-fit:cover;
+    border:1px solid var(--border);
+    background: var(--paper2);
+  }
+  .history-thumb-placeholder{
+    width:52px;height:52px;
+    flex-shrink:0;
+    border-radius:12px;
+    background: var(--paper2);
+    border:1px solid var(--border);
+    display:flex;align-items:center;justify-content:center;
+    font-size:22px;
+  }
+  .history-info{flex:1; min-width:0;}
+  .history-name{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:700;
+    font-size:15.5px;
+    color:var(--ink);
+    margin:0 0 3px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .history-date{
+    font-size:12.5px;
+    color:var(--muted);
+    margin:0;
+  }
+  .history-score{
+    width:44px;height:44px;
+    flex-shrink:0;
+    border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-family:'IBM Plex Mono',monospace;
+    font-weight:700;
+    font-size:15px;
+    color:black;
+  }
+  .history-empty{
+    text-align:center;
+    color:var(--muted);
+    font-size:14px;
+    padding:40px 20px;
+    background:var(--paper);
+    border:1px dashed var(--border);
+    border-radius:16px;
+  }
+
+  /* Auth */
+  #authView{display:none;}
+  .auth-card{
+    background: var(--paper);
+    border:1px solid var(--border);
+    border-radius:20px;
+    padding:32px 28px;
+    max-width:380px;
+    margin:0 auto;
+    box-shadow: 0 16px 40px var(--shadow);
+  }
+  .auth-card h2{
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:800;
+    font-size:24px;
+    margin:0 0 6px;
+    color:var(--ink);
+  }
+  .auth-card .auth-sub{
+    font-size:13.5px;
+    color:var(--muted);
+    margin:0 0 22px;
+  }
+  .auth-field{margin-bottom:14px;}
+  .auth-field label{
+    display:block;
+    font-size:12.5px;
+    color:var(--muted);
+    margin-bottom:6px;
+  }
+  .auth-field input{
+    width:100%;
+    background: var(--paper2);
+    border:1.5px solid var(--border);
+    border-radius:10px;
+    padding:11px 13px;
+    color:var(--ink);
+    font-size:14.5px;
+    font-family:'Inter',system-ui,sans-serif;
+  }
+  .auth-field input:focus{outline:none; border-color:mediumseagreen;}
+  .auth-submit{
+    display:block;
+    width:100%;
+    margin-top:10px;
+    padding:13px;
+    background: linear-gradient(100deg, seagreen, mediumseagreen);
+    color:black;
+    border:none;
+    border-radius:12px;
+    font-family:'Archivo Narrow',sans-serif;
+    font-weight:800;
+    font-size:15px;
+    letter-spacing:.03em;
+    text-transform:uppercase;
+    cursor:pointer;
+  }
+  .auth-submit:disabled{opacity:.5;cursor:default;}
+  .auth-error{
+    color:var(--bad);
+    font-size:13px;
+    margin:12px 0 0;
+    min-height:16px;
+  }
+  .auth-switch{
+    text-align:center;
+    font-size:13px;
+    color:var(--muted);
+    margin:18px 0 0;
+  }
+  .auth-switch a{color:mediumspringgreen; cursor:pointer; text-decoration:none;}
+  .auth-switch a:hover{text-decoration:underline;}
+
+  .account-bar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    margin-bottom:20px;
+    font-size:13px;
+    color:var(--muted);
+  }
+  .account-bar .who{color:var(--ink); font-weight:500;}
+  .logout-btn{
+    background: var(--paper);
+    border:1.5px solid var(--border);
+    color:var(--muted);
+    padding:6px 14px;
+    border-radius:16px;
+    font-size:12.5px;
+    cursor:pointer;
+    font-family:'IBM Plex Mono',monospace;
+  }
+  .logout-btn:hover{border-color:tomato; color:tomato;}
+
+  @media (max-width:480px){
+    h1{font-size:32px;}
+    .cal-row .num{font-size:27px;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <span class="eyebrow">🧪 OCR &middot; Nutrition Parsing &middot; LLM Analysis</span>
+  <h1>Food Label Reader</h1>
+  <p class="sub">Upload a photo of a nutrition facts label. It's read with OCR, parsed into structured values, and reviewed by an AI nutritionist.</p>
+
+  <div id="authView">
+    <div class="auth-card">
+      <h2 id="authTitle">Log in</h2>
+      <p class="auth-sub" id="authSub">Log in to scan labels and see your own scan history.</p>
+      <form id="authForm">
+        <div class="auth-field">
+          <label for="authEmail">Email</label>
+          <input type="email" id="authEmail" autocomplete="email" required>
+        </div>
+        <div class="auth-field">
+          <label for="authPassword">Password</label>
+          <input type="password" id="authPassword" autocomplete="current-password" required minlength="8">
+        </div>
+        <button class="auth-submit" id="authSubmitBtn" type="submit">Log in</button>
+        <p class="auth-error" id="authError"></p>
+      </form>
+      <p class="auth-switch" id="authSwitch">Don't have an account? <a id="authSwitchLink">Sign up</a></p>
+    </div>
+  </div>
+
+<div id="appShell" style="display:none;">
+  <div class="account-bar">
+    <span>Logged in as <span class="who" id="accountEmail"></span></span>
+    <button class="logout-btn" id="logoutBtn" type="button">Log out</button>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" id="tabScanBtn" type="button">Scan</button>
+    <button class="tab-btn" id="tabHistoryBtn" type="button">History</button>
+  </div>
+
+<div id="scanView">
+  <label class="dropzone" id="dropzone">
+    <input type="file" id="fileInput" accept="image/*">
+    <div id="dzContent">
+      <span class="dz-icon">📷</span>
+      <p class="dz-title">Drop a label photo here</p>
+      <p class="dz-sub">or click to choose a file — JPG or PNG</p>
+    </div>
+  </label>
+
+  <div class="conditions-panel">
+    <p class="conditions-label">Any health conditions to personalize warnings for? (optional)</p>
+    <div class="chip-group" id="chipGroup">
+  <label class="chip"><input type="checkbox" value="diabetes"> Diabetes</label>
+  <label class="chip"><input type="checkbox" value="high_bp"> High Blood Pressure</label>
+  <label class="chip"><input type="checkbox" value="high_cholesterol"> High Cholesterol</label>
+  <label class="chip"><input type="checkbox" value="kidney_disease"> Kidney Disease</label>
+  <label class="chip"><input type="checkbox" value="heart_disease"> Heart Disease</label>
+  <label class="chip"><input type="checkbox" value="weight_management"> Weight Management</label>
+  <label class="chip"><input type="checkbox" value="pregnancy"> Pregnancy</label>
+  <label class="chip"><input type="checkbox" value="nut_allergy"> Nut Allergy</label>
+  <label class="chip"><input type="checkbox" value="dairy_intolerance"> Dairy/Lactose Intolerance</label>
+  <label class="chip"><input type="checkbox" value="gluten_celiac"> Gluten/Celiac</label>
+  <label class="chip"><input type="checkbox" value="egg_allergy"> Egg Allergy</label>
+</div>
+  </div>
+
+  <button class="scan" id="scanBtn" disabled>Analyze label</button>
+  <p class="status" id="status"></p>
+
+  <div id="results">
+    <div class="label-panel">
+      <div class="label-head"><h2>Nutrition Facts</h2></div>
+      <div class="serving-row">
+        <span id="servingSize">Serving size —</span>
+      </div>
+      <div class="cal-row">
+        <span class="label">Calories</span>
+        <span class="num" id="calNum">—</span>
+      </div>
+      <div class="dv-head">% Daily Value*</div>
+      <div id="nutrientRows"></div>
+      <p class="footnote">*% Daily Values are based on a 2,000 calorie diet. Values extracted automatically from the uploaded label — verify against the physical package if precision matters.</p>
+    </div>
+
+    <div class="ingredients-panel">
+      <h3>🧾 Ingredients</h3>
+      <div id="ingredientsList"></div>
+    </div>
+
+    <div class="allergen-panel" id="allergenPanel" style="display:none;">
+      <h3>⚠️ Allergen Alerts</h3>
+      <div id="allergenRows"></div>
+    </div>
+
+    <div class="off-panel" id="offPanel" style="display:none;">
+      <h3>📦 Product Lookup</h3>
+      <p class="off-product" id="offProduct"></p>
+      <div class="off-badges" id="offBadges"></div>
+    </div>
+
+    <div class="diet-panel" id="dietPanel" style="display:none;">
+      <h3>🥗 Diet Compatibility</h3>
+      <div class="diet-tags" id="dietTags"></div>
+    </div>
+
+    <div class="seal-row">
+      <div class="seal" id="seal"><span class="n" id="sealNum">—</span><span class="l">SCORE</span></div>
+      <div class="seal-text">
+        <p class="t" id="sealLabel">—</p>
+        <p class="d">Overall health rating, from nutrients, additives, and processing level</p>
+      </div>
+    </div>
+
+    <div class="score-breakdown" id="scoreBreakdown" style="display:none;">
+      <p class="tag" id="scoreBreakdownToggle" style="cursor:pointer;">▸ Why this score?</p>
+      <ul id="scoreBreakdownList" style="display:none; margin:6px 0 0 0; padding-left:18px; font-size:0.9em;"></ul>
+    </div>
+
+    <div class="note">
+      <p class="tag">🩺 Nutritionist's Note<span id="personalizedTag"></span></p>
+      <p id="noteText">—</p>
+    </div>
+
+    <div class="export-menu">
+      <button class="export-btn" id="exportBtn" type="button">⬇ Export scan</button>
+      <div class="export-dropdown" id="exportDropdown">
+        <button id="exportJsonBtn" type="button">Export as JSON</button>
+        <button id="exportPdfBtn" type="button">Export as PDF</button>
+      </div>
+    </div>
+
+    <button class="reset-link" id="resetBtn">↺ Analyze another label</button>
+  </div>
+</div>
+
+<div id="historyView">
+  <p class="history-status" id="historyStatus">Loading past scans…</p>
+  <div class="history-list" id="historyList"></div>
+</div>
+
+</div>
+</div>
+
+<script>
+const API_URL = '/api/analyze';
+
+/* ---- Auth ---- */
+const AUTH_TOKEN_KEY = 'flr_token';
+const AUTH_EMAIL_KEY = 'flr_email';
+
+const authView = document.getElementById('authView');
+const appShell = document.getElementById('appShell');
+const authForm = document.getElementById('authForm');
+const authEmail = document.getElementById('authEmail');
+const authPassword = document.getElementById('authPassword');
+const authError = document.getElementById('authError');
+const authTitle = document.getElementById('authTitle');
+const authSub = document.getElementById('authSub');
+const authSubmitBtn = document.getElementById('authSubmitBtn');
+const authSwitch = document.getElementById('authSwitch');
+const authSwitchLink = document.getElementById('authSwitchLink');
+const accountEmail = document.getElementById('accountEmail');
+const logoutBtn = document.getElementById('logoutBtn');
+
+let authMode = 'login'; // 'login' | 'signup'
+
+function getToken(){ return localStorage.getItem(AUTH_TOKEN_KEY); }
+
+function setSession(token, email){
+  localStorage.setItem(AUTH_TOKEN_KEY, token);
+  localStorage.setItem(AUTH_EMAIL_KEY, email);
+}
+
+function clearSession(){
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_EMAIL_KEY);
+}
+
+// Every authenticated fetch goes through this — attaches the token and
+// treats a 401 as "session no longer valid" by logging out client-side.
+async function authFetch(url, options = {}){
+  const token = getToken();
+  const headers = Object.assign({}, options.headers, token ? { Authorization: `Bearer ${token}` } : {});
+  const res = await fetch(url, { ...options, headers });
+  if(res.status === 401){
+    clearSession();
+    showAuthScreen();
+    throw new Error('Your session expired — please log in again.');
+  }
+  return res;
+}
+
+function setAuthMode(mode){
+  authMode = mode;
+  authError.textContent = '';
+  if(mode === 'signup'){
+    authTitle.textContent = 'Sign up';
+    authSub.textContent = 'Create an account to start scanning labels and building your own history.';
+    authSubmitBtn.textContent = 'Sign up';
+    authPassword.setAttribute('autocomplete', 'new-password');
+    authSwitch.innerHTML = 'Already have an account? <a id="authSwitchLink">Log in</a>';
+  } else {
+    authTitle.textContent = 'Log in';
+    authSub.textContent = 'Log in to scan labels and see your own scan history.';
+    authSubmitBtn.textContent = 'Log in';
+    authPassword.setAttribute('autocomplete', 'current-password');
+    authSwitch.innerHTML = 'Don\'t have an account? <a id="authSwitchLink">Sign up</a>';
+  }
+  document.getElementById('authSwitchLink').addEventListener('click', () => setAuthMode(mode === 'signup' ? 'login' : 'signup'));
+}
+authSwitchLink.addEventListener('click', () => setAuthMode(authMode === 'signup' ? 'login' : 'signup'));
+
+authForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  authError.textContent = '';
+  authSubmitBtn.disabled = true;
+
+  const endpoint = authMode === 'signup' ? '/api/signup' : '/api/login';
+  try{
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: authEmail.value.trim(), password: authPassword.value }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if(!res.ok){
+      throw new Error(body.error || `Server responded ${res.status}`);
+    }
+    setSession(body.token, body.user.email);
+    authForm.reset();
+    showAppScreen();
+  }catch(err){
+    authError.textContent = err.message;
+  }finally{
+    authSubmitBtn.disabled = false;
+  }
+});
+
+logoutBtn.addEventListener('click', () => {
+  clearSession();
+  showAuthScreen();
+});
+
+function showAuthScreen(){
+  authView.style.display = 'block';
+  appShell.style.display = 'none';
+}
+
+function showAppScreen(){
+  authView.style.display = 'none';
+  appShell.style.display = 'block';
+  accountEmail.textContent = localStorage.getItem(AUTH_EMAIL_KEY) || '';
+  historyLoaded = false; // force a fresh history fetch for whoever's now logged in
+  showTab('scan');
+}
+
+setAuthMode('login');
+
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const dzContent = document.getElementById('dzContent');
+const scanBtn = document.getElementById('scanBtn');
+const statusEl = document.getElementById('status');
+const results = document.getElementById('results');
+const resetBtn = document.getElementById('resetBtn');
+
+document.getElementById('scoreBreakdownToggle').addEventListener('click', () => {
+  const list = document.getElementById('scoreBreakdownList');
+  const toggle = document.getElementById('scoreBreakdownToggle');
+  const open = list.style.display !== 'none';
+  list.style.display = open ? 'none' : 'block';
+  toggle.textContent = (open ? '▸' : '▾') + ' Why this score?';
+});
+
+let selectedFile = null;
+let currentScanData = null;
+
+function setFile(file){
+  if(!file || !file.type.startsWith('image/')) return;
+  selectedFile = file;
+  const url = URL.createObjectURL(file);
+  dzContent.innerHTML = `
+    <img src="${url}" class="preview-thumb" alt="Selected label"/>
+    <p class="dz-title">${file.name}</p>
+    <p class="dz-sub">Click to choose a different photo</p>
+  `;
+  scanBtn.disabled = false;
+  statusEl.textContent = '';
+  statusEl.className = 'status';
+}
+
+fileInput.addEventListener('change', e => setFile(e.target.files[0]));
+
+['dragenter','dragover'].forEach(evt =>
+  dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.add('drag'); })
+);
+['dragleave','drop'].forEach(evt =>
+  dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.remove('drag'); })
+);
+dropzone.addEventListener('drop', e => {
+  const file = e.dataTransfer.files[0];
+  if(file) setFile(file);
+});
+
+document.querySelectorAll('#chipGroup input[type=checkbox]').forEach((box) => {
+  box.addEventListener('change', () => {
+    box.closest('.chip').classList.toggle('checked', box.checked);
+  });
+});
+function getSelectedConditions(){
+  return Array.from(document.querySelectorAll('#chipGroup input:checked')).map(el => el.value);
+}
+const CONDITION_LABELS = { diabetes: 'Diabetes', high_bp: 'High Blood Pressure', high_cholesterol: 'High Cholesterol', kidney_disease: 'Kidney Disease', heart_disease: 'Heart Disease', weight_management: 'Weight Management', pregnancy: 'Pregnancy', nut_allergy: 'Nut Allergy', dairy_intolerance: 'Dairy/Lactose Intolerance', gluten_celiac: 'Gluten/Celiac', egg_allergy: 'Egg Allergy' };
+
+function nutrientLabel(key){
+  const map = {
+    total_fat_g:'Total Fat', saturated_fat_g:'Saturated Fat', trans_fat_g:'Trans Fat',
+    cholesterol_mg:'Cholesterol', sodium_mg:'Sodium', total_carbs_g:'Total Carbohydrate',
+    fiber_g:'Dietary Fiber', total_sugars_g:'Total Sugars', added_sugars_g:'Added Sugars',
+    protein_g:'Protein', calories:'Calories'
+  };
+  return map[key] || key;
+}
+function unitFor(key){
+  if(key.endsWith('_mg')) return 'mg';
+  if(key.endsWith('_g')) return 'g';
+  return '';
+}
+function pctClass(pct){
+  if(pct >= 20) return 'bad';
+  if(pct >= 10) return 'ok';
+  return 'good';
+}
+function scoreColor(score){
+  if(score >= 70) return 'mediumseagreen';
+  if(score >= 40) return 'orange';
+  return 'tomato';
+}
+function letterGradeColor(grade){
+  // Nutri-Score / Eco-Score: A (best) through E (worst)
+  const colors = { A:'mediumseagreen', B:'yellowgreen', C:'orange', D:'darkorange', E:'tomato' };
+  return colors[grade] || 'gray';
+}
+function novaColor(group){
+  // NOVA 1 = unprocessed, 4 = ultra-processed
+  const colors = { 1:'mediumseagreen', 2:'yellowgreen', 3:'orange', 4:'tomato' };
+  return colors[group] || 'gray';
+}
+
+function renderResults(data){
+  currentScanData = data;
+
+  document.getElementById('servingSize').textContent =
+    'Serving size ' + (data.nutrition?.serving_size || 'Not detected');
+  document.getElementById('calNum').textContent = data.nutrition?.calories ?? '—';
+
+  const order = ['total_fat_g','saturated_fat_g','trans_fat_g','cholesterol_mg','sodium_mg','total_carbs_g','fiber_g','total_sugars_g','added_sugars_g','protein_g'];
+  const rowsEl = document.getElementById('nutrientRows');
+  rowsEl.innerHTML = '';
+  order.forEach((key) => {
+    const wasDetected = key in (data.nutrition || {});
+    const row = document.createElement('div');
+    // Always render the row, even when this field wasn't parsed off the
+    // label. Silently omitting the row (old behavior) made "not detected"
+    // indistinguishable from "genuinely absent from this product" — and
+    // fed straight into condition checks (e.g. diabetes/sugar) defaulting
+    // to 0 with no signal that the value was actually unknown.
+    if(!wasDetected){
+      row.className = 'nutrient-row not-detected-row';
+      row.innerHTML = `
+        <span class="name">${nutrientLabel(key)}</span>
+        <span class="not-detected">Not detected on label</span>
+      `;
+      rowsEl.appendChild(row);
+      return;
+    }
+    const amt = data.nutrition[key];
+    const pct = data.dailyValuePercent?.[key];
+    row.className = 'nutrient-row';
+    const cls = pct != null ? pctClass(pct) : 'neutral';
+    row.innerHTML = `
+      <span class="name">${nutrientLabel(key)}</span>
+      <span>
+        <span class="amt">${amt}${unitFor(key)}</span>
+        <span class="pct ${cls}">${pct!=null?pct+'%':'—'}</span>
+      </span>
+    `;
+    rowsEl.appendChild(row);
+  });
+
+  const ingredientsEl = document.getElementById('ingredientsList');
+  const ingredients = data.ingredients || [];
+  if(ingredients.length){
+    ingredientsEl.innerHTML = `<div class="ingredients-list">${
+      ingredients.map(i => `<span class="ingredient-chip">${i}</span>`).join('')
+    }</div>`;
+  } else {
+    ingredientsEl.innerHTML = `
+      <p class="ingredients-empty">No ingredients list detected on this label.</p>
+      <label class="ingredients-retry-btn" for="ingredientsPhotoInput">📷 Add a close-up photo of the ingredients list</label>
+      <input type="file" id="ingredientsPhotoInput" accept="image/*" style="display:none;">
+      <p class="ingredients-retry-status" id="ingredientsRetryStatus"></p>
+    `;
+    document.getElementById('ingredientsPhotoInput').addEventListener('change', onIngredientsPhotoSelected);
+  }
+
+  const allergenPanel = document.getElementById('allergenPanel');
+  const allergenRowsEl = document.getElementById('allergenRows');
+  const allergens = data.allergens || {};
+  const allergenKeys = Object.keys(allergens);
+  if(allergenKeys.length){
+    allergenPanel.style.display = 'block';
+    allergenRowsEl.innerHTML = allergenKeys.map(name =>
+      `<p class="allergen-row"><b>${name}:</b> ${allergens[name].join(', ')}</p>`
+    ).join('');
+  } else {
+    allergenPanel.style.display = 'none';
+    allergenRowsEl.innerHTML = '';
+  }
+
+  const offPanel = document.getElementById('offPanel');
+  const offProductEl = document.getElementById('offProduct');
+  const offBadgesEl = document.getElementById('offBadges');
+  const off = data.openFoodFacts;
+  if(off && off.found){
+    offPanel.style.display = 'block';
+    const nameLine = [off.productName, off.brands].filter(Boolean).join(' — ');
+    offProductEl.innerHTML = nameLine
+      ? `<b>${nameLine}</b>${off.quantity ? ' · ' + off.quantity : ''}`
+      : `Barcode ${data.barcode} matched, but no product name on file.`;
+
+    const badges = [];
+    if(off.nutriScore){
+      badges.push(`<span class="off-badge"><span class="grade" style="background:${letterGradeColor(off.nutriScore)}">${off.nutriScore}</span> Nutri-Score</span>`);
+    }
+    if(off.novaGroup){
+      badges.push(`<span class="off-badge"><span class="grade" style="background:${novaColor(off.novaGroup)}">${off.novaGroup}</span> NOVA group</span>`);
+    }
+    if(off.ecoScore){
+      badges.push(`<span class="off-badge"><span class="grade" style="background:${letterGradeColor(off.ecoScore)}">${off.ecoScore}</span> Eco-Score</span>`);
+    }
+    offBadgesEl.innerHTML = badges.length
+      ? badges.join('')
+      : `<p class="off-empty">Product found, but no Nutri-Score/NOVA/Eco-Score on file yet.</p>`;
+  } else if(data.barcode){
+    offPanel.style.display = 'block';
+    const label = data.barcodeType === 'QR-Code' ? 'QR code' : 'Barcode';
+    offProductEl.innerHTML = `${label} <b>${data.barcode}</b> detected.`;
+    offBadgesEl.innerHTML = `<p class="off-empty">${off?.reason || 'Not found on OpenFoodFacts.'}</p>`;
+  } else {
+    offPanel.style.display = 'none';
+    offProductEl.innerHTML = '';
+    offBadgesEl.innerHTML = '';
+  }
+
+  const dietPanel = document.getElementById('dietPanel');
+  const dietTagsEl = document.getElementById('dietTags');
+  const diet = data.dietCompatibility;
+  const DIET_LABELS = {
+    vegan: '🌱 Vegan', vegetarian: '🥕 Vegetarian', halalKosher: '☪️ Halal/Kosher',
+    keto: '🥑 Keto', paleo: '🍖 Paleo', lowFodmap: '🍽️ Low-FODMAP',
+  };
+  if(diet){
+    dietPanel.style.display = 'block';
+    dietTagsEl.innerHTML = Object.entries(DIET_LABELS).map(([key, tagLabel]) => {
+      const entry = diet[key];
+      if(!entry) return '';
+      const ok = entry.friendly;
+      const title = ok ? '' : `title="Conflicts: ${entry.conflicts.join(', ')}"`;
+      return `<span class="diet-tag ${ok ? 'ok' : 'conflict'}" ${title}><span class="icon">${ok ? '✓' : '✕'}</span>${tagLabel}</span>`;
+    }).join('');
+  } else {
+    dietPanel.style.display = 'none';
+    dietTagsEl.innerHTML = '';
+  }
+
+  const score = data.healthScore?.score ?? 0;
+  const label = data.healthScore?.label ?? '—';
+  const seal = document.getElementById('seal');
+  seal.style.background = scoreColor(score);
+  document.getElementById('sealNum').textContent = score;
+  document.getElementById('sealLabel').textContent = label;
+
+  const breakdown = data.healthScore?.breakdown || [];
+  const breakdownWrap = document.getElementById('scoreBreakdown');
+  const breakdownList = document.getElementById('scoreBreakdownList');
+  if(breakdown.length){
+    breakdownWrap.style.display = 'block';
+    breakdownList.innerHTML = breakdown
+      .slice()
+      .sort((a,b) => a.delta - b.delta) // biggest penalties first
+      .map(b => `<li>${b.delta > 0 ? '+' : ''}${b.delta} — ${b.reason}</li>`)
+      .join('');
+  } else {
+    breakdownWrap.style.display = 'none';
+  }
+
+  document.getElementById('noteText').textContent = data.healthAnalysis || 'No analysis available.';
+
+  const conds = data.conditions || [];
+  document.getElementById('personalizedTag').textContent = conds.length
+    ? ` — personalized for ${conds.map(c => CONDITION_LABELS[c] || c).join(', ')}`
+    : '';
+
+  results.style.display = 'block';
+  results.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+async function onIngredientsPhotoSelected(e){
+  const ingredientsFile = e.target.files[0];
+  if(!ingredientsFile || !selectedFile) return;
+
+  const statusLine = document.getElementById('ingredientsRetryStatus');
+  if(statusLine) statusLine.textContent = 'Reading ingredients photo…';
+
+  const formData = new FormData();
+  formData.append('image', selectedFile);
+  formData.append('ingredientsImage', ingredientsFile);
+  formData.append('conditions', JSON.stringify(getSelectedConditions()));
+
+  try{
+    const res = await authFetch(API_URL, { method:'POST', body: formData });
+    if(!res.ok){
+      const errBody = await res.json().catch(()=>({}));
+      throw new Error(errBody.error || `Server responded ${res.status}`);
+    }
+    const data = await res.json();
+    renderResults(data);
+    if(!data.ingredients || !data.ingredients.length){
+      const retryStatus = document.getElementById('ingredientsRetryStatus');
+      if(retryStatus) retryStatus.textContent = "Still couldn't find an ingredients list in that photo — try a closer, well-lit shot.";
+    }
+  }catch(err){
+    if(statusLine) statusLine.textContent = `Couldn't read that photo: ${err.message}`;
+  }
+}
+
+scanBtn.addEventListener('click', async () => {
+  if(!selectedFile) return;
+  scanBtn.disabled = true;
+  statusEl.className = 'status';
+  statusEl.textContent = 'Reading label — running OCR and nutrition analysis…';
+
+  const formData = new FormData();
+  formData.append('image', selectedFile);
+  formData.append('conditions', JSON.stringify(getSelectedConditions()));
+
+  try{
+    const res = await authFetch(API_URL, { method:'POST', body: formData });
+    if(!res.ok){
+      const errBody = await res.json().catch(()=>({}));
+      throw new Error(errBody.error || `Server responded ${res.status}`);
+    }
+    const data = await res.json();
+    statusEl.textContent = '';
+    renderResults(data);
+  }catch(err){
+    statusEl.className = 'status err';
+    statusEl.textContent = `Couldn't analyze this label: ${err.message}`;
+  }finally{
+    scanBtn.disabled = false;
+  }
+});
+
+/* ---- History tab ---- */
+const tabScanBtn = document.getElementById('tabScanBtn');
+const tabHistoryBtn = document.getElementById('tabHistoryBtn');
+const scanView = document.getElementById('scanView');
+const historyView = document.getElementById('historyView');
+const historyStatus = document.getElementById('historyStatus');
+const historyList = document.getElementById('historyList');
+
+let historyLoaded = false;
+
+function showTab(tab){
+  const showHistory = tab === 'history';
+  tabScanBtn.classList.toggle('active', !showHistory);
+  tabHistoryBtn.classList.toggle('active', showHistory);
+  scanView.style.display = showHistory ? 'none' : 'block';
+  historyView.style.display = showHistory ? 'block' : 'none';
+  if(showHistory && !historyLoaded){
+    loadHistory();
+  }
+}
+
+tabScanBtn.addEventListener('click', () => showTab('scan'));
+tabHistoryBtn.addEventListener('click', () => showTab('history'));
+
+function formatHistoryDate(iso){
+  if(!iso) return '';
+  const d = new Date(iso);
+  if(isNaN(d)) return '';
+  return d.toLocaleString(undefined, { dateStyle:'medium', timeStyle:'short' });
+}
+
+function renderHistoryCard(scan){
+  const off = scan.openFoodFacts;
+  const name = (off && off.found && off.productName)
+    ? off.productName
+    : (scan.ingredients && scan.ingredients.length ? scan.ingredients[0] : 'Unnamed label scan');
+  const thumb = (off && off.found && off.imageUrl)
+    ? `<img class="history-thumb" src="${off.imageUrl}" alt="${name}" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'history-thumb-placeholder',textContent:'🏷️'}))">`
+    : `<div class="history-thumb-placeholder">🏷️</div>`;
+
+  const score = scan.healthScore?.score;
+  const scoreLabel = scan.healthScore?.label;
+  const scoreBadge = (score != null)
+    ? `<div class="history-score" style="background:${scoreColor(score)}" title="${scoreLabel || ''}">${score}</div>`
+    : `<div class="history-score" style="background:gray">—</div>`;
+
+  const card = document.createElement('div');
+  card.className = 'history-card';
+  card.innerHTML = `
+    ${thumb}
+    <div class="history-info">
+      <p class="history-name">${name}</p>
+      <p class="history-date">${formatHistoryDate(scan.createdAt)}</p>
+    </div>
+    ${scoreBadge}
+  `;
+  return card;
+}
+
+async function loadHistory(){
+  historyStatus.className = 'history-status';
+  historyStatus.textContent = 'Loading past scans…';
+  historyList.innerHTML = '';
+
+  try{
+    const res = await authFetch('/api/history');
+    if(!res.ok){
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Server responded ${res.status}`);
+    }
+    const data = await res.json();
+    const scans = data.scans || [];
+    historyLoaded = true;
+
+    if(!scans.length){
+      historyStatus.textContent = '';
+      historyList.innerHTML = '<div class="history-empty">No past scans yet — analyze a label to see it here.</div>';
+      return;
+    }
+
+    historyStatus.textContent = `${scans.length} past scan${scans.length === 1 ? '' : 's'}`;
+    scans.forEach(scan => historyList.appendChild(renderHistoryCard(scan)));
+  }catch(err){
+    historyStatus.className = 'history-status err';
+    historyStatus.textContent = `Couldn't load history: ${err.message}`;
+  }
+}
+
+/* ---- Export ---- */
+const exportBtn = document.getElementById('exportBtn');
+const exportDropdown = document.getElementById('exportDropdown');
+const exportJsonBtn = document.getElementById('exportJsonBtn');
+const exportPdfBtn = document.getElementById('exportPdfBtn');
+
+exportBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  exportDropdown.classList.toggle('open');
+});
+document.addEventListener('click', () => exportDropdown.classList.remove('open'));
+
+function scanFileBaseName(){
+  const off = currentScanData?.openFoodFacts;
+  const name = (off && off.found && off.productName) ? off.productName : 'food-label-scan';
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'scan';
+}
+
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+exportJsonBtn.addEventListener('click', () => {
+  if(!currentScanData) return;
+  const blob = new Blob([JSON.stringify(currentScanData, null, 2)], { type: 'application/json' });
+  downloadBlob(blob, `${scanFileBaseName()}.json`);
+  exportDropdown.classList.remove('open');
+});
+
+exportPdfBtn.addEventListener('click', () => {
+  if(!currentScanData || !window.jspdf) return;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const data = currentScanData;
+  const marginX = 14;
+  let y = 18;
+  const lineGap = 7;
+
+  const addLine = (text, opts = {}) => {
+    if(y > 280){ doc.addPage(); y = 18; }
+    doc.setFontSize(opts.size || 11);
+    doc.setFont(undefined, opts.bold ? 'bold' : 'normal');
+    doc.text(String(text), marginX, y);
+    y += opts.gap || lineGap;
+  };
+
+  addLine('Food Label Reader — Scan Report', { size: 16, bold: true, gap: 10 });
+
+  const off = data.openFoodFacts;
+  if(off && off.found && off.productName){
+    addLine(off.productName, { size: 13, bold: true });
+  }
+  addLine(`Scanned: ${new Date(data.createdAt || Date.now()).toLocaleString()}`, { size: 10 });
+  y += 2;
+
+  addLine(`Health Score: ${data.healthScore?.score ?? '—'} (${data.healthScore?.label ?? '—'})`, { bold: true });
+  y += 2;
+
+  addLine('Nutrition (per serving)', { bold: true, gap: 8 });
+  const nutrition = data.nutrition || {};
+  Object.entries(nutrition).forEach(([key, val]) => {
+    if(key === 'serving_size') return;
+    addLine(`  ${nutrientLabel(key)}: ${val}${unitFor(key)}`, { size: 10, gap: 6 });
+  });
+  y += 2;
+
+  if((data.ingredients || []).length){
+    addLine('Ingredients', { bold: true, gap: 8 });
+    const wrapped = doc.splitTextToSize(data.ingredients.join(', '), 180);
+    wrapped.forEach((line) => addLine(line, { size: 10, gap: 6 }));
+    y += 2;
+  }
+
+  const allergenKeys = Object.keys(data.allergens || {});
+  if(allergenKeys.length){
+    addLine('Allergen Alerts', { bold: true, gap: 8 });
+    allergenKeys.forEach((name) => addLine(`  ${name}: ${data.allergens[name].join(', ')}`, { size: 10, gap: 6 }));
+    y += 2;
+  }
+
+  if(data.dietCompatibility){
+    addLine('Diet Compatibility', { bold: true, gap: 8 });
+    const DIET_LABELS2 = { vegan: 'Vegan', vegetarian: 'Vegetarian', halalKosher: 'Halal/Kosher', keto: 'Keto', paleo: 'Paleo', lowFodmap: 'Low-FODMAP' };
+    Object.entries(DIET_LABELS2).forEach(([key, tagLabel]) => {
+      const entry = data.dietCompatibility[key];
+      if(!entry) return;
+      addLine(`  ${tagLabel}: ${entry.friendly ? 'Compatible' : 'Conflicts — ' + entry.conflicts.join(', ')}`, { size: 10, gap: 6 });
+    });
+    y += 2;
+  }
+
+  if(data.healthAnalysis){
+    addLine("Nutritionist's Note", { bold: true, gap: 8 });
+    const wrappedNote = doc.splitTextToSize(data.healthAnalysis, 180);
+    wrappedNote.forEach((line) => addLine(line, { size: 10, gap: 6 }));
+  }
+
+  doc.save(`${scanFileBaseName()}.pdf`);
+  exportDropdown.classList.remove('open');
+});
+
+resetBtn.addEventListener('click', () => {
+  selectedFile = null;
+  fileInput.value = '';
+  scanBtn.disabled = true;
+  statusEl.textContent = '';
+  results.style.display = 'none';
+  document.getElementById('ingredientsList').innerHTML = '';
+  document.getElementById('allergenPanel').style.display = 'none';
+  document.getElementById('allergenRows').innerHTML = '';
+  document.getElementById('offPanel').style.display = 'none';
+  document.getElementById('offBadges').innerHTML = '';
+  document.getElementById('dietPanel').style.display = 'none';
+  document.getElementById('dietTags').innerHTML = '';
+  currentScanData = null;
+  dzContent.innerHTML = `
+    <span class="dz-icon">📷</span>
+    <p class="dz-title">Drop a label photo here</p>
+    <p class="dz-sub">or click to choose a file — JPG or PNG</p>
+  `;
+  window.scrollTo({top:0, behavior:'smooth'});
+});
+
+/* ---- Init: decide auth vs app screen once everything above is defined ---- */
+if(getToken()){
+  showAppScreen();
+} else {
+  showAuthScreen();
+}
+</script>
+</body>
+</html>
