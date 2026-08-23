@@ -23,6 +23,7 @@ const GS1_DIGITAL_LINK_RE = /\/01\/(\d{8,14})(?:[/?]|$)/;
  * the text isn't a recognizable product code (e.g. a random promo URL).
  */
 function extractProductCode(text) {
+  if (!text) return null;
   const trimmed = text.trim();
 
   // Case 1: the QR just encodes the number directly (8-14 digits).
@@ -46,11 +47,18 @@ function extractProductCode(text) {
  *   (e.g. a URL) so the caller can still show what was scanned.
  */
 function readBarcode(filePath) {
+  let results;
   try {
     const bytes = fs.readFileSync(filePath);
-    const results = scanImageBytes(bytes);
+    results = scanImageBytes(bytes);
 
     for (const r of results) {
+      // r.text is `string | undefined` per zedbar's own types (e.g. SQ
+      // codes, or a symbol whose bytes aren't valid text) — skip rather
+      // than crash on a symbol we can't read as text, and keep checking
+      // the rest of the decoded results.
+      if (!r.text) continue;
+
       if (LINEAR_BARCODE_TYPES.has(r.symbolType)) {
         return { code: r.text, symbolType: r.symbolType, isProductCode: true };
       }
@@ -67,6 +75,16 @@ function readBarcode(filePath) {
     // shouldn't break the rest of the analysis — just report nothing found.
     console.error('Barcode scan failed:', err.message);
     return null;
+  } finally {
+    // zedbar's DecodeResult/Bounds/Point are wasm-bindgen classes backed by
+    // WASM linear memory — they're not garbage-collected automatically, so
+    // leaving them unfreed leaks memory on every request over a long-running
+    // server process.
+    if (results) {
+      for (const r of results) {
+        if (typeof r.free === 'function') r.free();
+      }
+    }
   }
 }
 
