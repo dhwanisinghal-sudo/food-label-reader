@@ -51,7 +51,16 @@ if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
 const TESSERACT_CONFIG = { lang: 'eng', oem: 1, psm: 3 };
 
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  const indexPath = path.join(__dirname, 'index.html');
+  if (!fs.existsSync(indexPath)) {
+    console.error(`index.html not found at ${indexPath} — check for a Docker volume mount masking ${__dirname}, or that the image was built from the repo root with index.html present.`);
+    return res.status(500).send(
+      'Server misconfiguration: index.html is missing from the deployed image. '
+      + 'This usually means a Docker volume is masking the app directory, or the '
+      + 'image was built from a stale/wrong commit. Check server logs for details.',
+    );
+  }
+  res.sendFile(indexPath);
 });
 
 app.get('/api/health', (req, res) => {
