@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "Food Label Reader",
+    "slug": "food-label-reader-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Used to take photos of food labels for scanning.",
+        "NSPhotoLibraryUsageDescription": "Used to pick food label photos from your gallery."
+      }
+    },
+    "android": {
+      "package": "com.foodlabelreader.app",
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/icon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-status-bar"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "9ceacf1c-af4e-43eb-933d-a4b9eba866ff"
+      }
+    }
+  }
+}
