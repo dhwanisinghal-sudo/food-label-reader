@@ -28,6 +28,7 @@ process.on('uncaughtException', (err) => {
 const {
   parseNutrition, parseIngredients, detectAllergens, detectAdditives,
   calculateDailyValuePercent, calculateHealthScore, checkAllDietCompatibility,
+  ADDITIVE_INFO,
 } = require('./nutritionParser');
 const { getLLMAnalysis, ruleBasedFallback } = require('./llmNutritionist');
 const { readBarcode } = require('./barcodeReader');
@@ -191,6 +192,13 @@ app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
     conditions = [];
   }
 
+  // Optional — which FDA population group's Daily Values to use for %DV and
+  // scoring. Defaults to the standard "adults and children 4+" reference
+  // (same as every real nutrition label uses by default) if not sent or
+  // unrecognized, so existing clients (web frontend) are unaffected.
+  const ageGroup = ['adults_children_4plus', 'children_1_3', 'pregnant_lactating']
+    .includes(req.body.ageGroup) ? req.body.ageGroup : 'adults_children_4plus';
+
   try {
     ocrFilePath = await preprocessForOcr(filePath);
     const extractedText = await tesseract.recognize(ocrFilePath, TESSERACT_CONFIG);
@@ -228,7 +236,16 @@ app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
 
     const allergens = detectAllergens(ingredients);
     const additives = detectAdditives(ingredients);
-    const dvPercent = calculateDailyValuePercent(nutrition);
+    // Map each detected additive category to its plain-language note, so the
+    // client can show "why does this matter" instead of just a bare label.
+    // Only includes categories actually present — no notes for undetected ones.
+    const additiveInfo = {};
+    for (const category of Object.keys(additives)) {
+      if (additives[category] && additives[category].length && ADDITIVE_INFO[category]) {
+        additiveInfo[category] = ADDITIVE_INFO[category];
+      }
+    }
+    const dvPercent = calculateDailyValuePercent(nutrition, ageGroup);
     // null (not an empty per-diet object) when no ingredients were parsed —
     // the frontend treats null as "can't tell, no ingredients list found"
     // rather than showing every diet tag as falsely compatible.
@@ -276,10 +293,12 @@ app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
       ingredientsSource,
       allergens,
       additives,
+      additiveInfo,
       dietCompatibility,
       healthScore,
       healthAnalysis,
       conditions,
+      ageGroup,
       barcode: scanned ? scanned.code : null,
       barcodeType: scanned ? scanned.symbolType : null,
       openFoodFacts,

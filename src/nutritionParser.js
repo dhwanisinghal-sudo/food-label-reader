@@ -19,6 +19,31 @@ const DAILY_VALUES = {
   calories: 2000, total_fat_g: 78, saturated_fat_g: 20,
   cholesterol_mg: 300, sodium_mg: 2300, total_carbs_g: 275,
   fiber_g: 28, total_sugars_g: 50, added_sugars_g: 50, protein_g: 50,
+  // FDA 2020 label reference values for the micronutrients added below.
+  vitamin_d_mcg: 20, calcium_mg: 1300, iron_mg: 18, potassium_mg: 4700,
+};
+
+// FDA establishes FOUR separate sets of Daily Values by population group
+// (21 CFR 101.9) — this app supports the three relevant to people actually
+// eating solid food. Figures verified directly against 21 CFR 101.9 (Sep
+// 2026). "adults_children_4plus" duplicates DAILY_VALUES above so callers
+// can always look up a group by name, including the default.
+const AGE_GROUP_DAILY_VALUES = {
+  adults_children_4plus: { ...DAILY_VALUES },
+  // FDA reference for children 1 through 3 years of age.
+  children_1_3: {
+    calories: 1000, // informal reference (not an FDA %DV entry) for display only
+    total_fat_g: 39, saturated_fat_g: 10, cholesterol_mg: 300, sodium_mg: 1500,
+    total_carbs_g: 150, fiber_g: 14, total_sugars_g: 50, added_sugars_g: 25,
+    protein_g: 13, vitamin_d_mcg: 15, calcium_mg: 700, iron_mg: 7, potassium_mg: 3000,
+  },
+  // FDA reference for pregnant and lactating women.
+  pregnant_lactating: {
+    calories: 2200, // informal reference (not an FDA %DV entry) for display only
+    total_fat_g: 78, saturated_fat_g: 20, cholesterol_mg: 300, sodium_mg: 2300,
+    total_carbs_g: 275, fiber_g: 28, total_sugars_g: 50, added_sugars_g: 50,
+    protein_g: 71, vitamin_d_mcg: 15, calcium_mg: 1300, iron_mg: 27, potassium_mg: 5100,
+  },
 };
 
 const PLAUSIBLE_RANGE = {
@@ -26,6 +51,7 @@ const PLAUSIBLE_RANGE = {
   trans_fat_g: [0, 20], cholesterol_mg: [0, 500], sodium_mg: [0, 5000],
   total_carbs_g: [0, 150], fiber_g: [0, 60], total_sugars_g: [0, 150],
   added_sugars_g: [0, 150], protein_g: [0, 100],
+  vitamin_d_mcg: [0, 100], calcium_mg: [0, 2000], iron_mg: [0, 50], potassium_mg: [0, 6000],
 };
 
 const NUM = '([0-9OoIl]+\\.?[0-9]*)';
@@ -54,6 +80,13 @@ const PATTERNS = {
   total_sugars_g: new RegExp('(?:total\\s+)?sugars\\s*(?:less than\\s*)?' + NUM + '\\s*' + G_UNIT, 'i'),
   added_sugars_g: new RegExp('includes\\s*' + NUM + '\\s*' + G_UNIT + '\\s*added sugars', 'i'),
   protein_g: new RegExp('protein\\s*' + NUM + '\\s*' + G_UNIT, 'i'),
+  // Micronutrients — these were previously extracted by OCR (visible in
+  // extractedText) but never captured into `nutrition`, so real labels
+  // that print them (nearly all US labels do) silently lost this data.
+  vitamin_d_mcg: new RegExp('vitamin\\s*d\\s*' + NUM + '\\s*mc[g9]', 'i'),
+  calcium_mg: new RegExp('calcium\\s*' + NUM + '\\s*' + MG_UNIT, 'i'),
+  iron_mg: new RegExp('iron\\s*' + NUM + '\\s*' + MG_UNIT, 'i'),
+  potassium_mg: new RegExp('potassium\\s*' + NUM + '\\s*' + MG_UNIT, 'i'),
 };
 
 function cleanNum(raw) {
@@ -299,11 +332,16 @@ function checkAllDietCompatibility(nutrition, ingredients) {
   };
 }
 
-function calculateDailyValuePercent(nutrition) {
+// ageGroup defaults to the standard adult/child-4+ reference — the same
+// behavior as before this parameter existed, so every existing caller
+// (including the web frontend, which doesn't send ageGroup at all) keeps
+// working unchanged.
+function calculateDailyValuePercent(nutrition, ageGroup = 'adults_children_4plus') {
+  const table = AGE_GROUP_DAILY_VALUES[ageGroup] || DAILY_VALUES;
   const dv = {};
   for (const [key, amount] of Object.entries(nutrition)) {
-    if (key in DAILY_VALUES && amount != null) {
-      dv[key] = Math.round((amount / DAILY_VALUES[key]) * 1000) / 10;
+    if (key in table && amount != null) {
+      dv[key] = Math.round((amount / table[key]) * 1000) / 10;
     }
   }
   return dv;
@@ -316,6 +354,18 @@ const ADDITIVE_CATEGORY_LABELS = {
   otherPreservatives: 'preservatives',
   hydrogenatedOils: 'partially hydrogenated oil',
   flavorEnhancers: 'flavor enhancers',
+};
+
+// Short, neutral, factual notes on what each additive category actually is
+// and why it's used — not medical advice, just plain-language context so a
+// detected additive isn't just an unexplained name on screen.
+const ADDITIVE_INFO = {
+  artificialColors: 'Synthetic dyes added purely for appearance. Some (e.g. Red 40, Yellow 5) are under regulatory review in various countries over possible links to hyperactivity in sensitive children.',
+  artificialSweeteners: 'Low- or zero-calorie sugar substitutes used to sweeten food without adding sugar or calories. Considered safe in typical amounts by the FDA and EFSA.',
+  nitritesNitrates: 'Preservatives that prevent bacterial growth (including botulism) and preserve color in cured meats. Can form nitrosamines, compounds linked to increased cancer risk with frequent, high intake.',
+  otherPreservatives: 'Used to extend shelf life and prevent spoilage or oxidation. Generally recognized as safe (GRAS) at the levels typically used in food.',
+  hydrogenatedOils: 'A source of trans fats, which raise LDL ("bad") cholesterol and are linked to increased heart disease risk. The FDA has restricted their use in the US food supply.',
+  flavorEnhancers: 'Used to intensify savory taste. Generally recognized as safe, though some people report sensitivity (e.g. headaches) to MSG in large amounts.',
 };
 
 // dv/nutrition are required; additives and novaGroup are optional so this
@@ -351,6 +401,12 @@ function calculateHealthScore(dv, nutrition, additives = {}, novaGroup = null) {
   const positives = [
     ['fiber_g', 20, 5, 'Fiber'],   // if fiber is >=20% DV, +5
     ['protein_g', 20, 5, 'Protein'], // if protein is >=20% DV, +5
+    // Micronutrient bonuses — smaller than fiber/protein since these are
+    // "good to have more of" but less impactful on overall diet quality.
+    ['vitamin_d_mcg', 20, 2, 'Vitamin D'],
+    ['calcium_mg', 20, 2, 'Calcium'],
+    ['iron_mg', 20, 2, 'Iron'],
+    ['potassium_mg', 20, 2, 'Potassium'],
   ];
   for (const [key, threshold, bonus, label] of positives) {
     const pct = dv[key] || 0;
@@ -403,5 +459,5 @@ module.exports = {
   calculateDailyValuePercent, calculateHealthScore,
   checkDietCompatibility, checkHalalKosher, checkKetoCompatibility,
   checkPaleoCompatibility, checkFodmapCompatibility, checkAllDietCompatibility,
-  DAILY_VALUES, cleanNum, splitTopLevelCommas,
+  DAILY_VALUES, AGE_GROUP_DAILY_VALUES, cleanNum, splitTopLevelCommas, ADDITIVE_INFO,
 };
