@@ -18,7 +18,7 @@ Internship project exploring OCR, text parsing, and automated health insights �
 ## How to use it
 
 ### Web app
-Live at the deployed backend's root URL — open it in any browser, sign up, and start scanning. No install needed.
+Live at https://food-label-reader-1.onrender.com — open it in any browser, sign up, and start scanning. No install needed.
 
 ### Mobile app (Android)
 A native React Native/Expo app lives in [`mobile-app/`](./mobile-app), built against the same backend — same accounts, same scan history. See [`mobile-app/README.md`](./mobile-app/README.md) for setup and build instructions.
