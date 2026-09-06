@@ -19,13 +19,51 @@ function Section({ title, children }) {
   );
 }
 
+// Human-readable labels for additive category keys — mirrors
+// ADDITIVE_CATEGORY_LABELS in the backend's nutritionParser.js.
+const ADDITIVE_CATEGORY_LABELS = {
+  artificialColors: 'Artificial Colors',
+  artificialSweeteners: 'Artificial Sweeteners',
+  nitritesNitrates: 'Nitrite/Nitrate Preservatives',
+  otherPreservatives: 'Preservatives',
+  hydrogenatedOils: 'Partially Hydrogenated Oil',
+  flavorEnhancers: 'Flavor Enhancers',
+};
+
+// Human-readable label for the ageGroup code the backend echoes back.
+const AGE_GROUP_LABELS = {
+  adults_children_4plus: 'Adult / Child 4+',
+  children_1_3: 'Toddler (1–3 yrs)',
+  pregnant_lactating: 'Pregnant / Lactating',
+};
+
+// A small horizontal bar showing %DV at a glance, capped visually at 100%
+// so a >100% nutrient doesn't overflow the row — the number label still
+// shows the true value.
+function DVBar({ pct }) {
+  if (typeof pct !== 'number') return null;
+  const clamped = Math.max(0, Math.min(100, pct));
+  const color = pct >= 20 ? '#c62828' : pct >= 5 ? '#f9a825' : '#2e7d32';
+  return (
+    <View style={styles.dvBarTrack}>
+      <View style={[styles.dvBarFill, { width: `${clamped}%`, backgroundColor: color }]} />
+    </View>
+  );
+}
+
 export default function ResultsScreen({ route }) {
   const { result } = route.params;
   const {
     nutrition = {}, dailyValuePercent = {}, ingredients = [], allergens = [],
-    additives = [], dietCompatibility, healthScore, healthAnalysis,
-    barcode, barcodeType, openFoodFacts,
+    additives = {}, additiveInfo = {}, dietCompatibility, healthScore, healthAnalysis,
+    barcode, barcodeType, openFoodFacts, ageGroup,
   } = result || {};
+
+  // additives is an OBJECT keyed by category — {artificialColors: ['Red 40'], ...}
+  // — not an array, so it can't use .length directly.
+  const additiveCategories = Object.keys(additives).filter(
+    (cat) => additives[cat] && additives[cat].length > 0,
+  );
 
   // The backend returns healthScore as an OBJECT — { score, label, breakdown }
   // — not a plain number. score/label can be null when no nutrition data was
@@ -36,6 +74,11 @@ export default function ResultsScreen({ route }) {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
+      {ageGroup && (
+        <Text style={styles.ageGroupTag}>
+          %DV reference: {AGE_GROUP_LABELS[ageGroup] || ageGroup}
+        </Text>
+      )}
       {typeof scoreValue === 'number' && (
         <>
           <View style={[styles.scoreCard, { borderColor: scoreColor(scoreValue) }]}>
@@ -75,12 +118,15 @@ export default function ResultsScreen({ route }) {
           <Text style={styles.mutedText}>No nutrition data extracted from this photo.</Text>
         ) : (
           Object.entries(nutrition).map(([key, value]) => (
-            <View key={key} style={styles.factRow}>
-              <Text style={styles.factLabel}>{key}</Text>
-              <Text style={styles.factValue}>
-                {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                {dailyValuePercent[key] ? `  (${dailyValuePercent[key]}% DV)` : ''}
-              </Text>
+            <View key={key} style={styles.nutrientBlock}>
+              <View style={styles.factRow}>
+                <Text style={styles.factLabel}>{key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}</Text>
+                <Text style={styles.factValue}>
+                  {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                  {dailyValuePercent[key] != null ? `  (${dailyValuePercent[key]}% DV)` : ''}
+                </Text>
+              </View>
+              <DVBar pct={dailyValuePercent[key]} />
             </View>
           ))
         )}
@@ -92,9 +138,19 @@ export default function ResultsScreen({ route }) {
         </Section>
       )}
 
-      {additives.length > 0 && (
+      {additiveCategories.length > 0 && (
         <Section title="🧪 Additives">
-          <Text style={styles.bodyText}>{additives.join(', ')}</Text>
+          {additiveCategories.map((cat) => (
+            <View key={cat} style={styles.additiveBlock}>
+              <Text style={styles.additiveTitle}>
+                {ADDITIVE_CATEGORY_LABELS[cat] || cat}
+              </Text>
+              <Text style={styles.bodyText}>{additives[cat].join(', ')}</Text>
+              {additiveInfo[cat] && (
+                <Text style={styles.additiveNote}>ℹ️ {additiveInfo[cat]}</Text>
+              )}
+            </View>
+          ))}
         </Section>
       )}
 
@@ -149,6 +205,10 @@ export default function ResultsScreen({ route }) {
 
 const styles = StyleSheet.create({
   container: { padding: 20, paddingBottom: 60, backgroundColor: '#fff' },
+  ageGroupTag: {
+    fontSize: 12, color: '#666', textAlign: 'center', marginBottom: 10,
+    backgroundColor: '#f2f2f2', alignSelf: 'center', paddingVertical: 4, paddingHorizontal: 12, borderRadius: 12,
+  },
   scoreCard: {
     alignSelf: 'center', width: 140, height: 140, borderRadius: 70, borderWidth: 6,
     justifyContent: 'center', alignItems: 'center', marginBottom: 20,
@@ -170,4 +230,12 @@ const styles = StyleSheet.create({
   factRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   factLabel: { fontSize: 14, color: '#555', textTransform: 'capitalize' },
   factValue: { fontSize: 14, color: '#111', fontWeight: '600' },
+  nutrientBlock: { marginBottom: 8 },
+  dvBarTrack: {
+    height: 5, borderRadius: 3, backgroundColor: '#eee', overflow: 'hidden', marginTop: 2,
+  },
+  dvBarFill: { height: '100%', borderRadius: 3 },
+  additiveBlock: { marginBottom: 12 },
+  additiveTitle: { fontSize: 14, fontWeight: '700', color: '#333', marginBottom: 2 },
+  additiveNote: { fontSize: 12, color: '#777', lineHeight: 17, marginTop: 3 },
 });

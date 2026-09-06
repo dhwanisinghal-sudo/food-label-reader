@@ -58,10 +58,11 @@ export async function getStoredSession() {
  * analysis, mirroring exactly what the web frontend's fetch() call does.
  *
  * @param {string} imageUri - local file:// URI from the image picker
- * @param {string[]} conditions - e.g. ['diabetic', 'hypertensive']
+ * @param {string[]} conditions - e.g. ['diabetes', 'high_bp']
  * @param {string} [ingredientsUri] - optional second photo
+ * @param {string} [ageGroup] - 'adults_children_4plus' | 'children_1_3' | 'pregnant_lactating'
  */
-export async function analyzeLabel(imageUri, conditions = [], ingredientsUri = null) {
+export async function analyzeLabel(imageUri, conditions = [], ingredientsUri = null, ageGroup = 'adults_children_4plus') {
   const form = new FormData();
   form.append('image', {
     uri: imageUri,
@@ -76,6 +77,7 @@ export async function analyzeLabel(imageUri, conditions = [], ingredientsUri = n
     });
   }
   form.append('conditions', JSON.stringify(conditions));
+  form.append('ageGroup', ageGroup);
 
   const { data } = await client.post('/api/analyze', form, {
     headers: { 'Content-Type': 'multipart/form-data' },

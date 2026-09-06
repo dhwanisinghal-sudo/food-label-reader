@@ -24,10 +24,20 @@ const CONDITIONS = [
   { id: 'egg_allergy', label: 'Egg Allergy' },
 ];
 
+// Matches the three age groups the backend recognizes (see server.js's
+// ageGroup whitelist) — these are the FDA's own population groups from
+// 21 CFR 101.9, each with different official Daily Values.
+const AGE_GROUPS = [
+  { id: 'adults_children_4plus', label: 'Adult / Child 4+' },
+  { id: 'children_1_3', label: 'Toddler (1–3 yrs)' },
+  { id: 'pregnant_lactating', label: 'Pregnant / Lactating' },
+];
+
 export default function ScanScreen({ navigation }) {
   const [imageUri, setImageUri] = useState(null);
   const [ingredientsUri, setIngredientsUri] = useState(null);
   const [selectedConditions, setSelectedConditions] = useState([]);
+  const [ageGroup, setAgeGroup] = useState('adults_children_4plus');
   const [busy, setBusy] = useState(false);
 
   const toggleCondition = (id) => {
@@ -60,7 +70,7 @@ export default function ScanScreen({ navigation }) {
     }
     setBusy(true);
     try {
-      const data = await analyzeLabel(imageUri, selectedConditions, ingredientsUri);
+      const data = await analyzeLabel(imageUri, selectedConditions, ingredientsUri, ageGroup);
       navigation.navigate('Results', { result: data });
     } catch (err) {
       const msg = err?.response?.data?.error
@@ -105,6 +115,25 @@ export default function ScanScreen({ navigation }) {
         </TouchableOpacity>
       </View>
       {ingredientsUri ? <Text style={styles.helpText}>✓ Ingredients photo added</Text> : null}
+
+      <Text style={styles.sectionLabel}>Age / life-stage group</Text>
+      <Text style={styles.helpText}>
+        Changes which official Daily Values (%DV) are used — a toddler and an adult have different targets for the same nutrient.
+      </Text>
+      <View style={styles.chipsWrap}>
+        {AGE_GROUPS.map((g) => {
+          const active = ageGroup === g.id;
+          return (
+            <TouchableOpacity
+              key={g.id}
+              style={[styles.chip, active && styles.chipActive]}
+              onPress={() => setAgeGroup(g.id)}
+            >
+              <Text style={[styles.chipText, active && styles.chipTextActive]}>{g.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
 
       <Text style={styles.sectionLabel}>Your health profile (optional)</Text>
       <View style={styles.chipsWrap}>
