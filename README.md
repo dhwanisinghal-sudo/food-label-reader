@@ -21,7 +21,11 @@ Internship project exploring OCR, text parsing, and automated health insights �
 Live at https://food-label-reader-1.onrender.com — open it in any browser, sign up, and start scanning. No install needed.
 
 ### Mobile app (Android)
-A native React Native/Expo app lives in [`mobile-app/`](./mobile-app), built against the same backend — same accounts, same scan history. See [`mobile-app/README.md`](./mobile-app/README.md) for setup and build instructions.
+### Mobile app (Android)
+
+📱 **[Download the APK](https://drive.google.com/file/d/1c5dAvJlxQOD_4PctiyH4XXHDsapBNzrI/view?usp=drive_link)** — install directly on an Android phone (allow "install from unknown sources" when prompted, then open the downloaded file to install).
+
+The source lives in `mobile-app/`, built with React Native/Expo against the same backend — same accounts, same scan history. See `mobile-app/README.md` if you want to build it yourself instead.
 
 ### Backend
 ```
