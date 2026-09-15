@@ -1,73 +1,76 @@
+<div align="center">
+
 # 🥗 Food Label Reader
 
-Extracts nutrition information from food label photos using OCR, flags unhealthy sugar/sodium/fat levels based on FDA daily-value guidelines, and enriches results with data from OpenFoodFacts (Nutri-Score, NOVA processing group, Eco-Score).
+### OCR-powered nutrition label scanner with health scoring & diet intelligence
 
-Internship project exploring OCR, text parsing, and automated health insights — now available as a **web app**, a **native Android app**, and the original **research notebook**, all backed by one shared server.
+[![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![Tesseract OCR](https://img.shields.io/badge/Tesseract-OCR-4285F4?style=for-the-badge&logo=googlelens&logoColor=white)](https://github.com/tesseract-ocr/tesseract)
+[![OpenCV](https://img.shields.io/badge/OpenCV-Image%20Processing-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white)](https://opencv.org/)
+[![OpenFoodFacts](https://img.shields.io/badge/OpenFoodFacts-API-00AA55?style=for-the-badge&logo=googlemaps&logoColor=white)](https://world.openfoodfacts.org/)
 
-## What it does
+**Snap a photo of a nutrition label — get a full health breakdown, allergen flags, and diet compatibility in seconds.**
 
-- **OCR extraction** — reads nutrition facts panels from photos (Tesseract, with preprocessing: deskew, contrast enhancement, quality checks)
-- **Nutrition parsing** — pulls out calories, fat, sodium, carbs, sugar, protein, fiber, cholesterol, **and micronutrients (Vitamin D, Calcium, Iron, Potassium)**
-- **Age/life-stage-aware Daily Values** — %DV and health scoring can be calculated against the FDA's official reference values for **Adults/Children 4+**, **Toddlers (1–3 yrs)**, or **Pregnant/Lactating** individuals (21 CFR 101.9), not just one fixed adult baseline
-- **Health scoring** — 0–100 composite score with an Excellent/Good/Moderate/Poor rating and a line-by-line breakdown of what raised or lowered it
-- **Ingredient intelligence** — detects allergens (milk, soy, nuts, gluten, etc.), additives (artificial colors, sweeteners, preservatives, hydrogenated oils, flavor enhancers) **with a plain-language note on what each one is and why it matters**, and diet compatibility (vegan, keto, halal/kosher, paleo, low-FODMAP)
-- **Barcode + OpenFoodFacts lookup** — scans barcodes/QR codes in the photo and fetches Nutri-Score, Eco-Score, and NOVA processing group for the product
-- **Personalized health flags** — alerts based on a selected health profile (diabetes, high blood pressure, high cholesterol, heart disease, kidney disease, weight management, pregnancy, and common allergies/intolerances)
-- **Accounts + scan history** — sign up, log in, and revisit past scans (MongoDB Atlas)
+*Internship project exploring OCR, text parsing, and automated health insights.*
 
-## How to use it
+[What It Does](#-what-it-does) • [How to Run](#-how-to-run-it) • [Tech Stack](#%EF%B8%8F-tech-stack) • [Limitations](#-known-limitations) • [Tested On](#-tested-on)
 
-### Web app
-Live at https://food-label-reader-1.onrender.com — open it in any browser, sign up, and start scanning. No install needed.
+</div>
 
-### Mobile app (Android)
+---
 
-📱 **[Download the APK](https://drive.google.com/file/d/1c5dAvJlxQOD_4PctiyH4XXHDsapBNzrI/view?usp=drive_link)** — install directly on an Android phone (allow "install from unknown sources" when prompted, then open the downloaded file to install).
+## 🧾 Overview
 
-The source lives in `mobile-app/`, built with React Native/Expo against the same backend — same accounts, same scan history. See `mobile-app/README.md` if you want to build it yourself instead.
+Food Label Reader turns a photo of any nutrition facts panel into a structured, personalized health report. It reads the label with OCR, cross-checks the numbers, scores the product, flags allergens and additives, and — if a barcode is visible — enriches everything with live data from OpenFoodFacts (Nutri-Score, NOVA group, Eco-Score).
 
-### Backend
-```
-cd src
-npm install
-node server.js
-```
-Requires a `.env` with `MONGODB_URI` and `JWT_SECRET`. Serves both the API (`/api/*`) and the web frontend (`index.html`).
+## ✨ What It Does
 
-### Original research notebook
-1. Open `notebooks/food_label_reader_final.ipynb` in [Google Colab](https://colab.research.google.com/)
-2. **Runtime → Run all**
-3. When prompted, upload one or more nutrition label photos (Ctrl/Cmd+click to select multiple)
+| | |
+|---|---|
+| 🔍 **OCR Extraction** | Reads nutrition panels from photos using Tesseract, with deskew, contrast enhancement & quality checks |
+| 🧮 **Nutrition Parsing** | Pulls calories, fat, sodium, carbs, sugar, protein, fiber, cholesterol, vitamins & minerals |
+| 🏆 **Health Scoring** | 0–100 composite score based on WHO/FDA daily value thresholds |
+| ⚠️ **Ingredient Intelligence** | Flags allergens (milk, soy, nuts, gluten…), additives, artificial sweeteners |
+| 🥗 **Diet Compatibility** | Checks fit for vegan, keto, halal/kosher, paleo, low-FODMAP diets |
+| 📷 **Barcode Lookup** | Scans barcodes and pulls Nutri-Score, Eco-Score & NOVA group from OpenFoodFacts |
+| 🎯 **Personalized Flags** | Custom alerts based on a user profile (diabetic, hypertensive, allergies, fitness goals) |
+| 🖼️ **Multi-Image Support** | Upload several labels at once — each gets its own report and charts |
+| 📤 **Export** | Save results as JSON/PDF; scan history logged to a local SQLite database |
+
+## 🚀 How to Run It
+
+1. Open `food_label_reader_final.ipynb` in **[Google Colab](https://colab.research.google.com/)**
+2. Click **Runtime → Run all**
+3. When prompted, upload one or more nutrition label photos *(Ctrl/Cmd+click to select multiple)*
 4. Each image's report — nutrition breakdown, health score, insights, and charts — prints automatically
 
-No API key needed for either the app or the notebook. OpenFoodFacts lookups only run if a barcode is detected in the photo.
+> No API key needed. OpenFoodFacts lookups only run when a barcode is detected in the photo.
 
-## Known limitations
+## 🛠️ Tech Stack
 
-- OCR accuracy depends heavily on photo quality (lighting, blur, angle)
-- Nutri-Score/Eco-Score/NOVA data only appears if a barcode is visible **and** the product is registered on OpenFoodFacts
+- **Language:** Python
+- **OCR:** Tesseract OCR
+- **Image Processing:** OpenCV
+- **Barcode Scanning:** pyzbar
+- **External Data:** OpenFoodFacts API
+- **Visualization:** matplotlib
+- **Storage:** SQLite
+- **PDF Export:** reportlab
+
+## ⚠️ Known Limitations
+
+- OCR accuracy depends heavily on photo quality (lighting, blur, angle) — the notebook warns you before processing an unsuitable photo
+- Nutri-Score / Eco-Score / NOVA data only appears if a barcode is visible **and** the product is registered on OpenFoodFacts
 - Ingredient parsing works best on labels with a clearly printed "Ingredients:" section
-- OCR misreads (e.g. `0`↔`O`, `g`↔digit confusion) are corrected using a %DV cross-check against the label's own printed daily-value percentages, but this isn't foolproof on noisy photos
 
-## Tech stack
+## 🧪 Tested On
 
-**Backend:** Node.js + Express, MongoDB Atlas (Mongoose), JWT + bcrypt auth, Tesseract OCR (`node-tesseract-ocr`), Sharp (image preprocessing), zedbar (barcode/QR decoding), OpenFoodFacts API
-**Web frontend:** HTML/CSS/JavaScript
-**Mobile app:** React Native (Expo), React Navigation, Axios
-**Hosting:** Render (backend + web app)
-**Original notebook:** Python, Tesseract OCR, OpenCV, pyzbar, matplotlib, SQLite, reportlab
+Tested against **11 real product photos** (7 nutrition labels, 4 barcodes) across varying quality conditions. OCR misreads (e.g. `0`↔`O`, `g`↔digit confusion) are corrected using a %DV cross-check against the label's own printed daily-value percentages.
 
-## Tested on
+---
 
-11+ real product photos across varying quality conditions, plus live end-to-end testing of the deployed web app, backend API, and mobile app on Android.
+<div align="center">
 
-## Project structure
+⭐ **If you found this project useful, consider giving it a star!**
 
-```
-src/            Backend — Express server, OCR/nutrition parsing, auth, OpenFoodFacts
-models/         MongoDB schemas (User, ScanHistory)
-mobile-app/     React Native (Expo) Android app
-notebooks/      Original Colab research notebook
-tests/          Parser tests
-index.html      Web frontend
-```
+</div>
