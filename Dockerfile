@@ -19,4 +19,4 @@ RUN test -f index.html || (echo "BUILD FAILED: index.html missing from build con
 
 EXPOSE 5000
 
-CMD ["node", "server.js"]
+CMD ["node", "src/server.js"]
