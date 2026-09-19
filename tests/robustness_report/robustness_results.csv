@@ -1,0 +1,9 @@
+source_image,degradation,quality_ok,quality_issues,ocr_confidence,reliable,fields_extracted,calories_found,calories_word_in_ocr_text,extracted_keys,error
+dr_praegers_california_veggie_burger_jpg,clean_baseline,True,,75.2,True,6,True,True,"calories,protein_g,saturated_fat_g,serving_size,serving_size_parsed,total_carbs_g,total_fat_g,total_sugars_g",
+dr_praegers_california_veggie_burger_jpg,blur_mild,True,,57.0,False,1,True,False,calories,
+dr_praegers_california_veggie_burger_jpg,blur_heavy,False,"Image looks blurry (sharpness: 11.5, want > 100)",26.5,False,0,False,False,,
+dr_praegers_california_veggie_burger_jpg,rotate_5deg,True,,61.3,True,6,False,False,"added_sugars_g,cholesterol_mg,saturated_fat_g,total_fat_g,total_sugars_g,trans_fat_g",
+dr_praegers_california_veggie_burger_jpg,rotate_15deg,True,,39.4,False,0,False,False,,
+dr_praegers_california_veggie_burger_jpg,rotate_30deg,True,,33.0,False,0,False,False,,
+dr_praegers_california_veggie_burger_jpg,crop_10pct,True,,70.0,True,9,True,False,"added_sugars_g,calories,cholesterol_mg,protein_g,saturated_fat_g,serving_size,serving_size_parsed,sodium_mg,total_carbs_g,total_fat_g,total_sugars_g",
+dr_praegers_california_veggie_burger_jpg,crop_25pct,True,,85.3,True,9,True,True,"calories,cholesterol_mg,protein_g,saturated_fat_g,serving_size,serving_size_parsed,sodium_mg,total_carbs_g,total_fat_g,total_sugars_g,trans_fat_g",
