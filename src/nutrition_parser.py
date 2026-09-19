@@ -391,9 +391,33 @@ def extract_columns_if_present(image_path, langs="eng+hin"):
 _NUM = r'([0-9OoIl]+\.?[0-9]*)'
 
 
-def _clean_num(raw):
+# Tracks every automatic correction this module makes to a raw OCR value,
+# so evaluate_accuracy.py can report *how many* values were actually fixed
+# by these mechanisms instead of just describing them qualitatively.
+# Two distinct kinds are logged separately because they're different things:
+#   'char_substitution' -- a letter (O/o/I/l) that OCR misread in place of a
+#       digit, fixed by _clean_num() before the string is even a number.
+#   'dv_crosscheck'     -- a value that parsed as a plausible number but was
+#       then overwritten because it disagreed too strongly with the label's
+#       own printed %DV for that nutrient (see parse_nutrition()).
+_correction_log = []
+
+
+def reset_correction_log():
+    _correction_log.clear()
+
+
+def get_correction_log():
+    return list(_correction_log)
+
+
+def _clean_num(raw, field=None):
     """Converts an OCR'd number string (which may contain misread letters) to a float."""
     fixed = raw.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
+    if fixed != raw:
+        _correction_log.append({
+            'type': 'char_substitution', 'field': field, 'raw': raw, 'fixed': fixed,
+        })
     try:
         return float(fixed)
     except ValueError:
@@ -424,10 +448,27 @@ NUTRITION_PATTERNS = {
     'protein_g': r'protein\s*' + _NUM + r'\s*' + _G_UNIT,
 }
 
+# Source: US FDA 21 CFR 101.9(c)(9) -- the Reference Daily Intakes (RDI) and
+# Daily Reference Values (DRV) table used on the current (2016 final rule,
+# 81 FR 33742) Nutrition Facts label, for a 2000-calorie diet. These are the
+# SAME numbers printed as "%DV" on real US nutrition labels, which is why
+# the %DV cross-check logic in parse_nutrition() can compare our own
+# computed %DV against the one Tesseract read off the label itself.
+#
+# total_sugars_g is deliberately EXCLUDED from this table. The FDA table
+# does not define a %DV for total sugars -- only added_sugars_g has an
+# official DV (50g), which is why real US labels never print a %DV next to
+# "Total Sugars." An earlier version of this code reused added sugar's 50g
+# DV as a stand-in for total sugars; that was this project's own invented
+# number with no FDA basis, so it's been removed rather than kept as an
+# unlabeled approximation. Total sugars is still extracted and reported
+# (see NUTRITION_PATTERNS / accuracy_report.md), it just isn't scored via
+# %DV or included in calculate_health_score()'s weighted penalty -- only
+# added_sugars_g (which does have a real FDA DV) contributes to the score.
 DAILY_VALUES = {
     'calories': 2000, 'total_fat_g': 78, 'saturated_fat_g': 20,
     'cholesterol_mg': 300, 'sodium_mg': 2300, 'total_carbs_g': 275,
-    'fiber_g': 28, 'total_sugars_g': 50, 'added_sugars_g': 50, 'protein_g': 50,
+    'fiber_g': 28, 'added_sugars_g': 50, 'protein_g': 50,
 }
 
 _PLAUSIBLE_RANGE = {
@@ -585,7 +626,7 @@ def parse_nutrition(text):
             if second is None:
                 continue
             raw_amount, amount_end = second
-        value = _clean_num(raw_amount)
+        value = _clean_num(raw_amount, field=key)
         if value is None:
             continue
         lo, hi = _PLAUSIBLE_RANGE.get(key, (0, float('inf')))
@@ -612,7 +653,13 @@ def parse_nutrition(text):
                 if declared_pct > 0 and our_pct > 0:
                     ratio = our_pct / declared_pct
                     if ratio > 2.5 or ratio < 0.4:
-                        value = round(declared_pct / 100 * DAILY_VALUES[key], 2)
+                        corrected_value = round(declared_pct / 100 * DAILY_VALUES[key], 2)
+                        _correction_log.append({
+                            'type': 'dv_crosscheck', 'field': key,
+                            'ocr_value': value, 'corrected_value': corrected_value,
+                            'declared_pct': declared_pct,
+                        })
+                        value = corrected_value
 
         data[key] = int(value) if key == 'calories' else value
 
@@ -802,6 +849,41 @@ def calculate_daily_value_percent(nutrient_data, daily_values=DAILY_VALUES):
 
 def calculate_health_score(dv_percent, nova_group=None, nutriscore_grade=None, additives_found=None, nutrition_data=None):
     """
+    REFERENCES (added for the internship report -- this formula is NOT a
+    peer-reviewed or externally-validated scoring model; these sources
+    justify individual THRESHOLDS used below, not the overall formula or
+    its weights, which remain this project's own judgment calls):
+      - %DV thresholds & the "over 20% DV is high" cutoff: FDA's own
+        guidance for reading the label defines 5% DV or less as "low" and
+        20% DV or more as "high" for a nutrient -- see FDA, "How to
+        Understand and Use the Nutrition Facts Label" (fda.gov). This
+        project's 20%-DV penalty trigger for sat fat/added sugar/sodium is
+        directly this FDA "high" cutoff, not an invented number. (Total
+        sugars is extracted and reported but NOT %DV-scored here -- FDA
+        publishes no official %DV for total sugars, only for added sugars,
+        so only added_sugars_g feeds this penalty. An earlier version of
+        this code used a borrowed, non-FDA 50g figure for total sugars;
+        that's been removed rather than kept as an unlabeled guess.)
+      - Trans fat penalty: WHO's position (WHO fact sheet on trans fat,
+        and the FDA's 2015 final determination that partially hydrogenated
+        oils are not GRAS) is that there is no safe intake level -- unlike
+        sat fat/sodium/sugar, trans fat has no %DV on US labels at all for
+        this reason. This project's flat per-gram penalty (as opposed to a
+        %DV-based one) reflects that "no safe threshold" framing, but the
+        specific penalty size (10 points/gram, capped at 30) is this
+        project's own choice, not a value WHO or FDA publish.
+      - NOVA group penalty: the four-group classification (1=unprocessed
+        .. 4=ultra-processed) is Monteiro et al.'s NOVA system, used by
+        OpenFoodFacts. The PENALTY SIZES here (-7 for group 3, -15 for
+        group 4) are this project's own weights -- NOVA itself is a
+        classification system, not a scoring formula, so it doesn't
+        prescribe point deductions.
+      - Nutri-Score grade penalty: grades A-E come from OpenFoodFacts'
+        Nutri-Score computation (itself based on the French/UK FSA
+        nutrient-profiling model). The letter grade is externally
+        computed and trustworthy; the POINT VALUES mapped to each letter
+        here (0/5/12/20/28) are again this project's own choice.
+
     CHANGES from the original version (bugs found during the accuracy review):
 
     1. Trans fat now contributes to the score. It was completely absent
@@ -838,7 +920,7 @@ def calculate_health_score(dv_percent, nova_group=None, nutriscore_grade=None, a
 
     warnings = []
     score = 100
-    for key, weight in [('saturated_fat_g', 0.3), ('total_sugars_g', 0.3), ('sodium_mg', 0.2)]:
+    for key, weight in [('saturated_fat_g', 0.3), ('added_sugars_g', 0.3), ('sodium_mg', 0.2)]:
         if key not in dv_percent:
             warnings.append(f"{key.replace('_', ' ')} was not detected on the label -- score may be underestimated")
             continue
