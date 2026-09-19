@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 from nutrition_parser import (
     check_image_quality, deskew_image, extract_text_best_effort,
-    detect_allergens_full,
+    detect_allergens_full, reset_correction_log, get_correction_log,
 )
 
 NUMERIC_FIELDS = [
@@ -101,6 +101,8 @@ def evaluate(images_dir, ground_truth_path, out_dir):
     ocr_low_confidence = 0
     failure_cases = []
     per_image_counts = []  # (expected, correct) per evaluated photo, for the bootstrap CI
+    correction_counts = {'char_substitution': 0, 'dv_crosscheck': 0}
+    two_column_photos_used = 0
 
     for row in gt_rows:
         fname = row['filename']
@@ -114,9 +116,14 @@ def evaluate(images_dir, ground_truth_path, out_dir):
             quality_flagged += 1
 
         working_path = deskew_image(img_path, output_path=os.path.join(out_dir, f"_deskewed_{fname}"))
+        reset_correction_log()
         ocr = extract_text_best_effort(working_path)
         if not ocr['reliable']:
             ocr_low_confidence += 1
+        for entry in get_correction_log():
+            correction_counts[entry['type']] = correction_counts.get(entry['type'], 0) + 1
+        if ocr.get('columns_detected'):
+            two_column_photos_used += 1
 
         predicted = ocr['nutrition']
         predicted_ingredients = ocr['ingredients']
@@ -219,6 +226,30 @@ def evaluate(images_dir, ground_truth_path, out_dir):
     report_lines.append("## Allergen detection\n")
     report_lines.append(f"True positives: {allergen_tp}, False positives: {allergen_fp}, False negatives: {allergen_fn}")
     report_lines.append(f"Precision: {precision:.1%} | Recall: {recall:.1%} | F1: {f1:.1%}\n")
+
+    report_lines.append("## Automatic OCR value corrections\n")
+    report_lines.append(
+        f"- Character-substitution fixes (misread O/o/I/l treated as a digit before parsing): "
+        f"**{correction_counts['char_substitution']}** values across {n_evaluated} photos"
+    )
+    report_lines.append(
+        f"- %DV cross-check overrides (a parsed value disagreed too strongly with the label's own "
+        f"printed %DV and was replaced by the %DV-derived value): **{correction_counts['dv_crosscheck']}** values"
+    )
+    report_lines.append(
+        "- These counts are mechanical corrections applied automatically during parsing, not manual "
+        "corrections made by a person after the fact. A value that was auto-corrected can still end up "
+        "WRONG relative to ground truth (see failure_cases.csv) -- these numbers measure how often the "
+        "mechanism fired, not how often it fired correctly.\n"
+    )
+
+    report_lines.append("## Two-column label handling\n")
+    report_lines.append(
+        f"- Column detection (`extract_columns_if_present` / `_reconstruct_columns_from_words`) was "
+        f"actually used (i.e. it detected a confident two-column split AND that column recovered more "
+        f"fields than the merged whole-image parse) on **{two_column_photos_used}** of the {n_evaluated} "
+        f"evaluated photos.\n"
+    )
 
     report_lines.append(f"## Failure cases: {len(failure_cases)} logged -> see failure_cases.csv\n")
 
