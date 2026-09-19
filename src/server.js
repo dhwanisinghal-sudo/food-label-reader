@@ -35,19 +35,31 @@ const { readBarcode } = require('./barcodeReader');
 const { extractColumnsIfPresent } = require('./columnDetector');
 const { lookupProduct } = require('./openFoodFacts');
 const { connectDB, isDbConnected } = require('./db');
-const ScanHistory = require('./models/ScanHistory');
-const User = require('./models/User');
+const ScanHistory = require('../models/ScanHistory');
+const User = require('../models/User');
 const { issueToken, requireAuth } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// FIX: server.js lives in src/, but index.html and the uploads/ folder live
+// at the repo root. Every path below used to be built from __dirname
+// directly, which pointed at src/ once this file moved there during the
+// src/ reorganization -- meaning `npm start` couldn't find server.js at all
+// (package.json's "start" script and the Dockerfile's CMD both still said
+// `node server.js`, not `node src/server.js`), and even once that's fixed,
+// this file was still looking for index.html and creating uploads/ inside
+// src/ instead of at the project root. ROOT_DIR fixes the paths inside this
+// file; package.json and the Dockerfile needed their own separate fix (see
+// git history / commit message for this change).
+const ROOT_DIR = path.join(__dirname, '..');
+
 app.use(cors());
 app.use(express.json());
-app.use(express.static(__dirname));
+app.use(express.static(ROOT_DIR));
 
 const upload = multer({
-  dest: path.join(__dirname, 'uploads'),
+  dest: path.join(ROOT_DIR, 'uploads'),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
@@ -60,8 +72,8 @@ const uploadFields = upload.fields([
   { name: 'ingredientsImage', maxCount: 1 },
 ]);
 
-if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
-  fs.mkdirSync(path.join(__dirname, 'uploads'));
+if (!fs.existsSync(path.join(ROOT_DIR, 'uploads'))) {
+  fs.mkdirSync(path.join(ROOT_DIR, 'uploads'));
 }
 
 const TESSERACT_CONFIG = { lang: 'eng', oem: 1, psm: 3 };
@@ -84,9 +96,9 @@ async function preprocessForOcr(filePath) {
 }
 
 app.get('/', (req, res) => {
-  const indexPath = path.join(__dirname, 'index.html');
+  const indexPath = path.join(ROOT_DIR, 'index.html');
   if (!fs.existsSync(indexPath)) {
-    console.error(`index.html not found at ${indexPath} — check for a Docker volume mount masking ${__dirname}, or that the image was built from the repo root with index.html present.`);
+    console.error(`index.html not found at ${indexPath} — check for a Docker volume mount masking ${ROOT_DIR}, or that the image was built from the repo root with index.html present.`);
     return res.status(500).send(
       'Server misconfiguration: index.html is missing from the deployed image. '
       + 'This usually means a Docker volume is masking the app directory, or the '
