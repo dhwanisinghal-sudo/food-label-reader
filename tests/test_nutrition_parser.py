@@ -209,19 +209,21 @@ class TestHealthScore:
         assert 'N/A' in result['label']
 
     def test_low_sugar_sodium_scores_high(self):
-        dv = {'total_sugars_g': 4.0, 'sodium_mg': 5.0, 'saturated_fat_g': 0.0}
+        dv = {'added_sugars_g': 4.0, 'sodium_mg': 5.0, 'saturated_fat_g': 0.0}
         result = calculate_health_score(dv, nutrition_data={'calories': 100, 'trans_fat_g': 0})
         assert result['score'] >= 80
 
     def test_high_sugar_sodium_scores_lower(self):
-        dv = {'total_sugars_g': 90.0, 'sodium_mg': 80.0, 'saturated_fat_g': 70.0}
+        dv = {'added_sugars_g': 90.0, 'sodium_mg': 80.0, 'saturated_fat_g': 70.0}
         result = calculate_health_score(dv, nutrition_data={'calories': 500, 'trans_fat_g': 0})
         assert result['score'] < 80
 
     def test_missing_field_is_flagged_not_silently_zeroed(self):
-        """Fixed: a missing sugar reading now produces a warning instead of
-        being silently treated as a confirmed 0g."""
-        dv_missing_sugar = {'sodium_mg': 5.0, 'saturated_fat_g': 0.0}  # no total_sugars_g key
+        """Fixed: a missing added-sugar reading now produces a warning instead of
+        being silently treated as a confirmed 0g. (Uses added_sugars_g, not
+        total_sugars_g, since total sugars has no FDA %DV and isn't scored --
+        see calculate_health_score()'s docstring.)"""
+        dv_missing_sugar = {'sodium_mg': 5.0, 'saturated_fat_g': 0.0}  # no added_sugars_g key
         result = calculate_health_score(dv_missing_sugar, nutrition_data={'calories': 100, 'trans_fat_g': 0})
         assert any('sugar' in w for w in result['warnings'])
 
@@ -229,7 +231,7 @@ class TestHealthScore:
         """Fixed: trans fat used to contribute nothing to the score at all.
         This is the real photographed example from the accuracy review
         (unidentified_yellow_box_product_jpg.jpg): 3g trans fat/serving."""
-        dv = {'total_sugars_g': 0.0, 'sodium_mg': 0.0, 'saturated_fat_g': 0.0}
+        dv = {'added_sugars_g': 0.0, 'sodium_mg': 0.0, 'saturated_fat_g': 0.0}
         clean_result = calculate_health_score(dv, nutrition_data={'calories': 100, 'trans_fat_g': 0})
         trans_fat_result = calculate_health_score(dv, nutrition_data={'calories': 100, 'trans_fat_g': 3})
         assert trans_fat_result['score'] < clean_result['score']
@@ -238,14 +240,27 @@ class TestHealthScore:
         """Fixed: previously EVERY product without an OpenFoodFacts match
         ate a flat -10 penalty regardless of its own label. Now, no lookup
         at all (nutriscore_grade=None) means no penalty either way."""
-        dv = {'total_sugars_g': 0.0, 'sodium_mg': 0.0, 'saturated_fat_g': 0.0}
+        dv = {'added_sugars_g': 0.0, 'sodium_mg': 0.0, 'saturated_fat_g': 0.0}
         result = calculate_health_score(dv, nutriscore_grade=None, nutrition_data={'calories': 100, 'trans_fat_g': 0})
         assert result['score'] == 100
 
     def test_genuinely_unknown_grade_after_lookup_still_penalized(self):
-        dv = {'total_sugars_g': 0.0, 'sodium_mg': 0.0, 'saturated_fat_g': 0.0}
+        dv = {'added_sugars_g': 0.0, 'sodium_mg': 0.0, 'saturated_fat_g': 0.0}
         result = calculate_health_score(dv, nutriscore_grade='unknown', nutrition_data={'calories': 100, 'trans_fat_g': 0})
         assert result['score'] == 90
+
+    def test_total_sugars_not_used_for_scoring(self):
+        """Fixed: total_sugars_g used to borrow added sugar's 50g FDA daily
+        value as an unlabeled approximation (FDA publishes no %DV for total
+        sugars at all). It's now excluded from DAILY_VALUES/scoring entirely
+        -- a huge total_sugars_g %DV must NOT move the score, only
+        added_sugars_g (which has a real FDA DV) should."""
+        dv_with_bogus_total_sugar_dv = {'total_sugars_g': 500.0, 'sodium_mg': 0.0, 'saturated_fat_g': 0.0}
+        result = calculate_health_score(dv_with_bogus_total_sugar_dv, nutrition_data={'calories': 100, 'trans_fat_g': 0})
+        # total_sugars_g isn't a scored key at all, so it should behave
+        # identically to added_sugars_g being MISSING: warn, don't penalize.
+        assert result['score'] == 100
+        assert any('added sugar' in w for w in result['warnings'])
 
 
 class TestCleanNum:
