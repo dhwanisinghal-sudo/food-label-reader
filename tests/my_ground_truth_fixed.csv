@@ -1,0 +1,16 @@
+filename,calories,total_fat_g,saturated_fat_g,trans_fat_g,cholesterol_mg,sodium_mg,total_carbs_g,fiber_g,total_sugars_g,protein_g,allergens_true,notes
+protein_jerky_bag.jpg,120,2,0,0,10,150,5,0,0,21,,brand not visible in crop; jerky-style bag
+cheetos_crunchy.jpg,160,10,1.5,0,0,250,15,0.5,0.5,2,Milk,clean rendered graphic (not a phone photo)
+lucerne_liquid_egg_whites.jpg,25,0,0,0,0,75,0,0,0,5,Eggs,hand-held real photo of egg whites carton
+costco_organic_granny_smith_apple_chips.jpg,110,0,0,0,0,0,26,5,17,0.5,,ingredients line cut off in photo
+unidentified_yellow_box_product.jpg,100,11,2,3,0,100,0,,,0,,brand not visible; angled photo; likely shortening/margarine based on fat profile
+green_box_veggie_protein_product.jpg,190,8,0.5,0,0,390,11,8,1,19,,brand not visible; angled + slightly blurry real photo
+jenis_ice_cream_double_dough.jpg,330,20,11,0,80,210,36,0,28,5,,dual-column label (per serving used here; per-container also on pack) - flag in report
+savoritz_parmesan_crisps.jpg,160,11,7,,35,370,1,0,0,13,Milk,side-of-container real photo with glare
+bread_nutrition_label_generic.jpg,140,1.5,0.3,0.5,0,290,26,3,2,5,,clean rendered graphic (not a phone photo); brand not visible
+dr_praegers_california_veggie_burger.jpg,180,8,1,0,0,350,20,7,4,6,,clean box photo
+cucumber_avocado_tomato_salad_nutrition.jpg,304,27.0,5.2,0.0,0,484,17.3,8.8,5.5,3.6,,"clean rendered graphic (not a phone photo); generic dish, not a packaged product"
+trader_joes_kung_pao_chicken.jpg,240,10,2,0,30,690,17,2,8,24,,clean box photo
+trader_joes_sea_salted_potato_crisps.jpg,150,9,1.5,0,0,95,16,0.5,0,1,,"cylindrical container real photo, slight glare"
+whole_wheat_pasta_kroger.jpg,200,1.5,0,0,0,0,41,5,2,7,Wheat; may contain Egg,angled real photo of pasta box
+almonds_nutrition_label.jpg,580,51,4,0,0,1,20,12,5,21,,"clean rendered Pinterest graphic (not a phone photo); Almonds - tree nut allergen implied by product name, no explicit Contains statement on label"
