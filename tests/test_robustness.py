@@ -80,11 +80,18 @@ def run_one(image_path, out_dir):
         quality = check_image_quality(degraded_path)
         try:
             working_path = deskew_image(degraded_path, output_path=os.path.join(out_dir, f"_deskew__{base}__{label}.jpg"))
-            text = extract_text_best_effort(working_path)
-            nutrition = parse_nutrition(text)
+            ocr_result = extract_text_best_effort(working_path)
+            # BUG FIX: extract_text_best_effort() already returns parsed
+            # nutrition fields under ocr_result['nutrition'] -- this used to
+            # pass the whole result dict into parse_nutrition() again (which
+            # expects a raw string), silently throwing on every single row
+            # ("expected string or bytes-like object, got 'dict'") and
+            # getting swallowed by the except below, which made EVERY row
+            # -- including clean_baseline -- report 0 fields extracted, even
+            # though the same images score ~60% in accuracy_report.md.
+            nutrition = ocr_result['nutrition']
         except Exception as e:  # noqa: BLE001 - we want to record a crash as a result, not stop the run
             nutrition = {}
-            text = f"ERROR: {e}"
 
         quality_ok = quality.get('ok', True) if isinstance(quality, dict) else True
         quality_issues = '; '.join(quality.get('issues', [])) if isinstance(quality, dict) else ''
