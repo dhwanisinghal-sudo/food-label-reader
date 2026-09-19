@@ -22,5 +22,8 @@
     "node-tesseract-ocr": "^2.2.1",
     "sharp": "^0.35.3",
     "zedbar": "^0.5.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   }
 }
