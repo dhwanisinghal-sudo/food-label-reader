@@ -268,6 +268,40 @@ const ALLERGEN_KEYWORDS = {
   Sesame: ['sesame', 'tahini'],
 };
 
+// GAP FIX (ported from src/nutrition_parser.py's _keyword_matches /
+// _strip_plant_milk_exceptions, which this file never had): plain
+// `.includes()` matching flags "Eggplant" as an Egg conflict and
+// "Almonds" would fail to match "almond" as-written elsewhere. Switching
+// every keyword check below (allergens AND all diet-compatibility flags)
+// to word-boundary matching, with an optional trailing 's' for plurals,
+// fixes both directions at once:
+//   - "eggplant" no longer matches "egg" (no word boundary before "plant")
+//   - "eggs" / "almonds" / "walnuts" still match their singular keyword
+// "milk" gets one extra step: strip known plant-milk phrases ("coconut
+// milk", "almond milk", etc.) before checking, so those aren't flagged as
+// dairy — same exception list as the Python module.
+const _PLANT_MILK_EXCEPTIONS = [
+  'coconut milk', 'almond milk', 'soy milk', 'soya milk', 'oat milk',
+  'rice milk', 'cashew milk', 'hemp milk', 'pea milk',
+];
+
+function _stripPlantMilkExceptions(text) {
+  let cleaned = text;
+  for (const phrase of _PLANT_MILK_EXCEPTIONS) {
+    cleaned = cleaned.split(phrase).join('');
+  }
+  return cleaned;
+}
+
+function _escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function _keywordMatches(keyword, text) {
+  const haystack = keyword === 'milk' ? _stripPlantMilkExceptions(text) : text;
+  return new RegExp(`\\b${_escapeRegExp(keyword)}s?\\b`).test(haystack);
+}
+
 const ADDITIVE_KEYWORDS = {
   artificialColors: ['red 40', 'red 3', 'yellow 5', 'yellow 6', 'blue 1', 'blue 2', 'green 3'],
   artificialSweeteners: ['aspartame', 'sucralose', 'acesulfame', 'saccharin', 'neotame', 'advantame'],
@@ -296,7 +330,7 @@ function detectAllergens(ingredients) {
   for (const ingredient of ingredients) {
     const lower = ingredient.toLowerCase();
     for (const [allergen, keywords] of Object.entries(ALLERGEN_KEYWORDS)) {
-      if (keywords.some((kw) => lower.includes(kw))) {
+      if (keywords.some((kw) => _keywordMatches(kw, lower))) {
         if (!detected[allergen]) detected[allergen] = [];
         if (!detected[allergen].includes(ingredient)) detected[allergen].push(ingredient);
       }
@@ -314,8 +348,8 @@ const FODMAP_CONFLICT_KEYWORDS = ['garlic', 'onion', 'honey', 'high fructose cor
 
 function checkDietCompatibility(ingredients) {
   const text = ingredients.join(' ').toLowerCase();
-  const veganConflicts = VEGAN_CONFLICT_KEYWORDS.filter((kw) => text.includes(kw));
-  const vegetarianConflicts = VEGETARIAN_CONFLICT_KEYWORDS.filter((kw) => text.includes(kw));
+  const veganConflicts = VEGAN_CONFLICT_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
+  const vegetarianConflicts = VEGETARIAN_CONFLICT_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
   return {
     veganFriendly: veganConflicts.length === 0,
     veganConflicts,
@@ -326,7 +360,7 @@ function checkDietCompatibility(ingredients) {
 
 function checkHalalKosher(ingredients) {
   const text = ingredients.join(' ').toLowerCase();
-  const conflicts = NON_HALAL_KOSHER_KEYWORDS.filter((kw) => text.includes(kw));
+  const conflicts = NON_HALAL_KOSHER_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
   return { halalKosherSafe: conflicts.length === 0, conflicts };
 }
 
@@ -335,19 +369,23 @@ function checkKetoCompatibility(nutrition, ingredients) {
   const fiber = nutrition.fiber_g || 0;
   const netCarbs = Math.max(carbs - fiber, 0);
   const text = ingredients.join(' ').toLowerCase();
-  const conflicts = HIGH_CARB_KEYWORDS.filter((kw) => text.includes(kw));
+  // Multi-word phrases ("corn syrup") can't use \b-per-word matching the
+  // same way single words can, since _keywordMatches escapes the whole
+  // keyword as one literal — that's fine here, \b still anchors on the
+  // phrase's outer edges (e.g. won't match "unicorn syrupy" mid-word).
+  const conflicts = HIGH_CARB_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
   return { ketoFriendly: netCarbs <= 10 && conflicts.length === 0, netCarbsG: netCarbs, conflicts };
 }
 
 function checkPaleoCompatibility(ingredients) {
   const text = ingredients.join(' ').toLowerCase();
-  const conflicts = PALEO_CONFLICT_KEYWORDS.filter((kw) => text.includes(kw));
+  const conflicts = PALEO_CONFLICT_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
   return { paleoFriendly: conflicts.length === 0, conflicts };
 }
 
 function checkFodmapCompatibility(ingredients) {
   const text = ingredients.join(' ').toLowerCase();
-  const conflicts = FODMAP_CONFLICT_KEYWORDS.filter((kw) => text.includes(kw));
+  const conflicts = FODMAP_CONFLICT_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
   return { lowFodmap: conflicts.length === 0, conflicts };
 }
 
