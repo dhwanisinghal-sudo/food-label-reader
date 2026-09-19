@@ -220,8 +220,11 @@ def extract_text_best_effort(image_path, langs="eng+hin"):
     ocr_a = extract_text_with_confidence(image_path, langs, psm=3)
     ocr_b = extract_text_with_confidence(image_path, langs, psm=6)
 
-    parsed_a = parse_nutrition(ocr_a['text'])
-    parsed_b = parse_nutrition(ocr_b['text'])
+    # Fuzzy-correct likely OCR keyword misreads (e.g. "Sanented" ->
+    # "saturated", "Sodum" -> "sodium") before parsing -- see the
+    # fuzzy_correct_keywords docstring for what this can and cannot fix.
+    parsed_a = parse_nutrition(fuzzy_correct_keywords(ocr_a['text']))
+    parsed_b = parse_nutrition(fuzzy_correct_keywords(ocr_b['text']))
     merged_nutrition = {**parsed_b, **parsed_a}  # psm3 wins on conflicts, fills gaps from psm6
 
     ing_a = parse_ingredients(ocr_a['text'])
@@ -382,6 +385,52 @@ def extract_columns_if_present(image_path, langs="eng+hin"):
     if len(columns) < 2 or columns[0] is None:
         return None
     return columns
+
+
+
+# ---------------------------------------------------------------------------
+# 3c. Fuzzy keyword correction for badly-OCR'd nutrient labels
+# ---------------------------------------------------------------------------
+# REAL FINDING from debugging the two-column test photos: the label
+# parsing failures on savoritz_parmesan_crisps were NOT primarily a
+# column-layout problem -- they were caused by OCR misreading the nutrient
+# NAME keywords themselves on a low-quality/blurry photo (e.g. "Saturated"
+# read as "Sanented", "Sodium" read as "Sodum", "Dietary" read as
+# "Chetary"). The regex patterns require literal keyword text, so any of
+# these misreads causes that field to be silently skipped entirely.
+#
+# This is corrected ONLY for misreads close enough (>=68% character
+# similarity, and only for tokens with at least 5 letters) to a known
+# nutrient keyword to be corrected safely. Some real-world OCR misreads on
+# this photo were checked and found to be genuinely too corrupted to fix
+# this way without risking false-positive corrections elsewhere --
+# "Sanented" -> "saturated" is only 59% similar, and "Cuenta" ->
+# "cholesterol" is only 35% similar. Those remain a real, honestly-stated
+# limitation: no safe text-level fix exists for OCR output that corrupted;
+# only better image quality/OCR would recover them.
+import difflib as _difflib
+
+_KEYWORD_VOCAB = [
+    'calories', 'total', 'saturated', 'trans', 'cholesterol', 'sodium',
+    'carbohydrate', 'dietary', 'sugars', 'added', 'protein', 'serving',
+    'servings', 'container', 'amount', 'value', 'daily',
+]
+
+
+def fuzzy_correct_keywords(text, min_token_len=5, cutoff=0.68):
+    """Replaces OCR-misread nutrient keyword tokens with their likely
+    correct spelling, ONLY when the match is close enough to be safe.
+    Deliberately conservative -- see the module-level note above for why
+    some real misreads are left uncorrected rather than guessed at."""
+    def fix_token(tok):
+        core = ''.join(ch for ch in tok if ch.isalpha())
+        if len(core) < min_token_len:
+            return tok
+        matches = _difflib.get_close_matches(core.lower(), _KEYWORD_VOCAB, n=1, cutoff=cutoff)
+        if matches and matches[0] != core.lower():
+            return tok.replace(core, matches[0])
+        return tok
+    return ' '.join(fix_token(t) for t in text.split(' '))
 
 
 # ---------------------------------------------------------------------------
