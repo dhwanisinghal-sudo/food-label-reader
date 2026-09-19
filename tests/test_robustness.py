@@ -11,7 +11,15 @@ deskew_image -> extract_text_best_effort -> parse_nutrition) against each
 copy and reports which fields survive.
 
 Usage:
+    # One photo:
     python test_robustness.py --image label_photos/dr_praegers_california_veggie_burger.jpg --out_dir robustness_report
+
+    # Several named photos:
+    python test_robustness.py --image photo1.jpg --image photo2.jpg --out_dir robustness_report
+
+    # Every photo in a folder (e.g. the same 15 used in accuracy_report.md,
+    # so robustness is actually measured across the test set, not one photo):
+    python test_robustness.py --images_dir tests/label_photos --out_dir robustness_report
 
 Requires opencv-python, numpy (already in requirements.txt).
 """
@@ -127,14 +135,48 @@ def run_one(image_path, out_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--image', action='append', required=True,
+    parser.add_argument('--image', action='append', default=[],
                          help='Path to a clean source photo. Repeat --image to test more than one.')
+    parser.add_argument('--images_dir', default=None,
+                         help='Convenience alternative to repeating --image: run every .jpg/.jpeg/.png '
+                              'in this directory. Can be combined with --image; duplicates are de-duped. '
+                              'This is what actually gets you a robustness result ACROSS the accuracy '
+                              'test set instead of just one photo — e.g. --images_dir tests/label_photos '
+                              'to run every one of the 15 accuracy-report photos through every degradation.')
     parser.add_argument('--out_dir', default='robustness_report')
     args = parser.parse_args()
 
+    image_paths = list(args.image)
+    if args.images_dir:
+        if not os.path.isdir(args.images_dir):
+            parser.error(f'--images_dir {args.images_dir!r} is not a directory')
+        exts = ('.jpg', '.jpeg', '.png')
+        found = sorted(
+            os.path.join(args.images_dir, fn)
+            for fn in os.listdir(args.images_dir)
+            if fn.lower().endswith(exts)
+        )
+        if not found:
+            parser.error(f'No .jpg/.jpeg/.png files found in {args.images_dir!r}')
+        image_paths.extend(found)
+
+    # De-dupe while preserving order, in case the same photo was named via
+    # both --image and picked up by --images_dir.
+    seen = set()
+    deduped = []
+    for p in image_paths:
+        norm = os.path.abspath(p)
+        if norm not in seen:
+            seen.add(norm)
+            deduped.append(p)
+    image_paths = deduped
+
+    if not image_paths:
+        parser.error('No images to test -- pass at least one --image or a non-empty --images_dir')
+
     os.makedirs(args.out_dir, exist_ok=True)
     all_rows = []
-    for image_path in args.image:
+    for image_path in image_paths:
         print(f"\n{os.path.basename(image_path)}:")
         all_rows.extend(run_one(image_path, args.out_dir))
 
