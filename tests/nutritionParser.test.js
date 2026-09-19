@@ -319,6 +319,39 @@ describe('diet compatibility checks', () => {
     expect(checkAllDietCompatibility({}, null)).toBeNull();
   });
 
+  // GAP FIX regression tests: these five kept `.includes()` substring
+  // matching (the "eggplant" bug already fixed for vegan/allergens on the
+  // Python side, src/nutrition_parser.py's _keyword_matches) until now.
+  test('checkDietCompatibility does not flag eggplant as an egg/vegan conflict', () => {
+    const result = checkDietCompatibility(['Eggplant', 'Salt', 'Olive Oil']);
+    expect(result.veganFriendly).toBe(true);
+    expect(result.veganConflicts).toEqual([]);
+  });
+
+  test('checkDietCompatibility does not flag coconut milk as a dairy/vegan conflict', () => {
+    const result = checkDietCompatibility(['Coconut Milk', 'Sugar', 'Cocoa']);
+    expect(result.veganFriendly).toBe(true);
+  });
+
+  test('checkDietCompatibility still flags real dairy milk for vegan', () => {
+    const result = checkDietCompatibility(['Milk', 'Sugar']);
+    expect(result.veganFriendly).toBe(false);
+    expect(result.veganConflicts).toContain('milk');
+  });
+
+  test('checkHalalKosher does not false-positive on a substring collision', () => {
+    // "hamburger" contains "ham" as a substring but is not the pork product.
+    const result = checkHalalKosher(['Hamburger Seasoning', 'Salt']);
+    expect(result.halalKosherSafe).toBe(true);
+  });
+
+  test('detectAllergens does not flag eggplant, still flags plural "Eggs"', () => {
+    expect(detectAllergens(['Eggplant', 'Salt'])).toEqual({});
+    expect(detectAllergens(['Eggs', 'Sugar'])).toEqual(
+      expect.objectContaining({ 'Egg': ['Eggs'] }),
+    );
+  });
+
   test('checkAllDietCompatibility bundles all five checks together', () => {
     const result = checkAllDietCompatibility({ total_carbs_g: 20, fiber_g: 2 }, ['Wheat Flour', 'Sugar']);
     expect(result).toHaveProperty('vegan');
