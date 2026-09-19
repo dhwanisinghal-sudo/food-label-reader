@@ -72,6 +72,18 @@ const uploadFields = upload.fields([
   { name: 'ingredientsImage', maxCount: 1 },
 ]);
 
+// GAP FIX: the web app previously only accepted one label photo per
+// request (see uploadFields above) — the notebook's "upload several
+// photos, get a report for each" workflow had no web equivalent at all.
+// This accepts up to 10 independent label photos under the field name
+// "images" for a single POST. It does NOT accept a separate
+// ingredients-photo per item (that stays single-image-only, under
+// /api/analyze) — keeping batch mode to "N full label photos in, N
+// reports out" instead of trying to pair up two arrays index-by-index,
+// which would be a much easier place to silently mismatch a photo with
+// the wrong ingredients shot.
+const uploadBatch = upload.array('images', 10);
+
 if (!fs.existsSync(path.join(ROOT_DIR, 'uploads'))) {
   fs.mkdirSync(path.join(ROOT_DIR, 'uploads'));
 }
@@ -185,33 +197,18 @@ app.get('/api/history', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
-  const mainFile = req.files && req.files.image && req.files.image[0];
-  const ingredientsFile = req.files && req.files.ingredientsImage && req.files.ingredientsImage[0];
-
-  if (!mainFile) {
-    return res.status(400).json({ error: 'No image uploaded. Send a file under field name "image".' });
-  }
-
-  const filePath = mainFile.path;
-  const ingredientsFilePath = ingredientsFile ? ingredientsFile.path : null;
+// Runs the full pipeline (OCR -> parse -> allergens/diet/health score ->
+// barcode/OpenFoodFacts -> LLM analysis) for ONE already-uploaded image and
+// returns the same response shape /api/analyze always returned. Pulled out
+// of the /api/analyze route handler so /api/analyze-batch can call it once
+// per photo without duplicating ~150 lines of logic that then drift apart —
+// see GAP FIX note above uploadBatch. Cleans up its OWN temp files
+// (ocrFilePath / ingredientsOcrFilePath) but NOT the original uploaded
+// file(s) at filePath/ingredientsFilePath — the caller owns those, since
+// batch mode needs to keep multer's per-file bookkeeping in the caller.
+async function analyzeOneImage(filePath, { ingredientsFilePath = null, conditions = [], ageGroup = 'adults_children_4plus' } = {}) {
   let ocrFilePath = null;
   let ingredientsOcrFilePath = null;
-
-  let conditions = [];
-  try {
-    conditions = req.body.conditions ? JSON.parse(req.body.conditions) : [];
-  } catch {
-    conditions = [];
-  }
-
-  // Optional — which FDA population group's Daily Values to use for %DV and
-  // scoring. Defaults to the standard "adults and children 4+" reference
-  // (same as every real nutrition label uses by default) if not sent or
-  // unrecognized, so existing clients (web frontend) are unaffected.
-  const ageGroup = ['adults_children_4plus', 'children_1_3', 'pregnant_lactating']
-    .includes(req.body.ageGroup) ? req.body.ageGroup : 'adults_children_4plus';
-
   try {
     ocrFilePath = await preprocessForOcr(filePath);
     const extractedText = await tesseract.recognize(ocrFilePath, TESSERACT_CONFIG);
@@ -324,7 +321,7 @@ app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
       healthAnalysis = ruleBasedFallback(dvPercent, conditions, ingredients, additives);
     }
 
-    const responsePayload = {
+    return {
       extractedText,
       nutrition,
       dailyValuePercent: dvPercent,
@@ -343,7 +340,44 @@ app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
       openFoodFacts,
       columnsDetected,
     };
+  } finally {
+    // Only the temp files THIS function created (the preprocessed
+    // OCR-ready copies) are cleaned up here. The original upload(s) at
+    // filePath/ingredientsFilePath are the caller's responsibility, since
+    // batch mode holds onto them slightly differently (see route handlers).
+    if (ocrFilePath) fs.unlink(ocrFilePath, () => {});
+    if (ingredientsOcrFilePath) fs.unlink(ingredientsOcrFilePath, () => {});
+  }
+}
 
+function parseConditions(rawConditions) {
+  try {
+    return rawConditions ? JSON.parse(rawConditions) : [];
+  } catch {
+    return [];
+  }
+}
+
+function resolveAgeGroup(rawAgeGroup) {
+  return ['adults_children_4plus', 'children_1_3', 'pregnant_lactating']
+    .includes(rawAgeGroup) ? rawAgeGroup : 'adults_children_4plus';
+}
+
+app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
+  const mainFile = req.files && req.files.image && req.files.image[0];
+  const ingredientsFile = req.files && req.files.ingredientsImage && req.files.ingredientsImage[0];
+
+  if (!mainFile) {
+    return res.status(400).json({ error: 'No image uploaded. Send a file under field name "image".' });
+  }
+
+  const filePath = mainFile.path;
+  const ingredientsFilePath = ingredientsFile ? ingredientsFile.path : null;
+  const conditions = parseConditions(req.body.conditions);
+  const ageGroup = resolveAgeGroup(req.body.ageGroup);
+
+  try {
+    const responsePayload = await analyzeOneImage(filePath, { ingredientsFilePath, conditions, ageGroup });
     res.json(responsePayload);
 
     if (isDbConnected()) {
@@ -357,9 +391,43 @@ app.post('/api/analyze', requireAuth, uploadFields, async (req, res) => {
   } finally {
     fs.unlink(filePath, () => {});
     if (ingredientsFilePath) fs.unlink(ingredientsFilePath, () => {});
-    if (ocrFilePath) fs.unlink(ocrFilePath, () => {});
-    if (ingredientsOcrFilePath) fs.unlink(ingredientsOcrFilePath, () => {});
   }
+});
+
+// GAP FIX: multi-image batch endpoint (see uploadBatch above). Each photo
+// is fully independent — one photo failing (bad OCR, corrupt file, etc.)
+// is reported as an error entry for that photo only and does not abort the
+// rest of the batch, mirroring the notebook's "each image gets its own
+// report" behavior instead of an all-or-nothing request.
+app.post('/api/analyze-batch', requireAuth, uploadBatch, async (req, res) => {
+  const files = req.files || [];
+  if (!files.length) {
+    return res.status(400).json({ error: 'No images uploaded. Send one or more files under field name "images".' });
+  }
+
+  const conditions = parseConditions(req.body.conditions);
+  const ageGroup = resolveAgeGroup(req.body.ageGroup);
+
+  const results = [];
+  for (const file of files) {
+    try {
+      const responsePayload = await analyzeOneImage(file.path, { conditions, ageGroup });
+      results.push({ filename: file.originalname, success: true, ...responsePayload });
+
+      if (isDbConnected()) {
+        ScanHistory.create({ ...responsePayload, userId: req.userId }).catch((err) => {
+          console.error('Failed to save scan to history:', err.message);
+        });
+      }
+    } catch (err) {
+      console.error(`[batch] failed on ${file.originalname}:`, err);
+      results.push({ filename: file.originalname, success: false, error: `Processing failed: ${err.message}` });
+    } finally {
+      fs.unlink(file.path, () => {});
+    }
+  }
+
+  res.json({ count: results.length, results });
 });
 
 connectDB().finally(() => {
