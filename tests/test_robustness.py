@@ -78,6 +78,8 @@ def run_one(image_path, out_dir):
         cv2.imwrite(degraded_path, degraded)
 
         quality = check_image_quality(degraded_path)
+        ocr_result = {}
+        error = ''
         try:
             working_path = deskew_image(degraded_path, output_path=os.path.join(out_dir, f"_deskew__{base}__{label}.jpg"))
             ocr_result = extract_text_best_effort(working_path)
@@ -85,26 +87,41 @@ def run_one(image_path, out_dir):
             # nutrition fields under ocr_result['nutrition'] -- this used to
             # pass the whole result dict into parse_nutrition() again (which
             # expects a raw string), silently throwing on every single row
-            # ("expected string or bytes-like object, got 'dict'") and
-            # getting swallowed by the except below, which made EVERY row
-            # -- including clean_baseline -- report 0 fields extracted, even
-            # though the same images score ~60% in accuracy_report.md.
+            # and making EVERY row -- including clean_baseline -- report 0
+            # fields extracted.
             nutrition = ocr_result['nutrition']
         except Exception as e:  # noqa: BLE001 - we want to record a crash as a result, not stop the run
             nutrition = {}
+            error = f"{type(e).__name__}: {e}"
+
+        # Save the raw OCR text for every variant. When a field goes missing
+        # (e.g. calories on a cropped image) this is the file to open: if the
+        # word "Calories" is absent, OCR/layout is the cause; if it is present
+        # but the value wasn't parsed, the regex is the cause.
+        raw_text = ocr_result.get('text', '')
+        with open(os.path.join(out_dir, f"{base}__{label}__ocr.txt"), 'w', encoding='utf-8') as tf:
+            tf.write(raw_text)
 
         quality_ok = quality.get('ok', True) if isinstance(quality, dict) else True
         quality_issues = '; '.join(quality.get('issues', [])) if isinstance(quality, dict) else ''
+        fields_found = ocr_result.get('fields_found', sum(1 for k in nutrition if k.endswith(('_g', '_mg')) or k == 'calories'))
         rows.append({
             'source_image': base,
             'degradation': label,
             'quality_ok': quality_ok,
             'quality_issues': quality_issues,
-            'fields_extracted': len(nutrition),
+            'ocr_confidence': ocr_result.get('avg_confidence', ''),
+            'reliable': ocr_result.get('reliable', ''),
+            'fields_extracted': fields_found,
+            'calories_found': 'calories' in nutrition,
+            'calories_word_in_ocr_text': 'calories' in raw_text.lower(),
             'extracted_keys': ','.join(sorted(nutrition.keys())),
+            'error': error,
         })
-        print(f"  {label:16s} -> {len(nutrition)} fields extracted"
-              f"{' (quality issue: ' + quality_issues + ')' if not quality_ok else ''}")
+        print(f"  {label:16s} -> conf {ocr_result.get('avg_confidence', '-')!s:>5} | reliable={ocr_result.get('reliable', '-')!s:5} | "
+              f"{fields_found} fields | calories={'yes' if 'calories' in nutrition else 'NO'}"
+              f"{' (quality issue: ' + quality_issues + ')' if not quality_ok else ''}"
+              f"{' ERROR ' + error if error else ''}")
     return rows
 
 
@@ -123,13 +140,16 @@ def main():
 
     csv_path = os.path.join(args.out_dir, 'robustness_results.csv')
     with open(csv_path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['source_image', 'degradation', 'quality_ok', 'quality_issues', 'fields_extracted', 'extracted_keys'])
+        writer = csv.DictWriter(f, fieldnames=['source_image', 'degradation', 'quality_ok', 'quality_issues', 'ocr_confidence', 'reliable', 'fields_extracted', 'calories_found', 'calories_word_in_ocr_text', 'extracted_keys', 'error'])
         writer.writeheader()
         writer.writerows(all_rows)
 
     print(f"\nFull results written to {csv_path}")
     print("Compare 'fields_extracted' at each degradation level against 'clean_baseline' to see exactly")
     print("how many fields are lost at each severity of blur/rotation/crop -- paste this table into the report.")
+    print("A row with high ocr_confidence but reliable=False and few fields is the intended behavior: the")
+    print("pipeline is now refusing to call an empty extraction 'reliable'. calories_found=False with")
+    print("calories_word_in_ocr_text=True means the regex missed it; both False means OCR/layout missed it.")
 
 
 if __name__ == '__main__':
