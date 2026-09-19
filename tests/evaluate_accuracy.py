@@ -35,12 +35,17 @@ import argparse
 import csv
 import json
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# nutrition_parser.py lives in src/, this script lives in tests/ -- add both
+# the script's own folder and the sibling src/ folder so this runs no matter
+# which of those two you invoke it from.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 from nutrition_parser import (
-    check_image_quality, deskew_image, preprocess_image, extract_text_with_confidence,
-    parse_nutrition, parse_ingredients, detect_allergens,
+    check_image_quality, deskew_image, extract_text_best_effort,
+    detect_allergens_full,
 )
 
 NUMERIC_FIELDS = [
@@ -63,6 +68,25 @@ def load_ground_truth(path):
     return rows
 
 
+def bootstrap_ci_over_images(per_image, n_boot=5000, seed=0):
+    """95% bootstrap confidence interval for overall field accuracy, resampling
+    IMAGES (not individual fields). Fields within one photo are strongly
+    correlated -- a blurry photo fails on nearly every field at once -- so
+    treating 150 fields as 150 independent trials would make the number look
+    far more certain than it is. per_image = list of (expected, correct)."""
+    per_image = [(e, c) for e, c in per_image if e > 0]
+    if len(per_image) < 2:
+        return None
+    rng = random.Random(seed)
+    stats = []
+    for _ in range(n_boot):
+        sample = [per_image[rng.randrange(len(per_image))] for _ in per_image]
+        exp = sum(e for e, _ in sample)
+        stats.append(sum(c for _, c in sample) / exp if exp else 0.0)
+    stats.sort()
+    return stats[int(0.025 * n_boot)], stats[int(0.975 * n_boot) - 1]
+
+
 def evaluate(images_dir, ground_truth_path, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     gt_rows = load_ground_truth(ground_truth_path)
@@ -76,6 +100,7 @@ def evaluate(images_dir, ground_truth_path, out_dir):
     quality_flagged = 0
     ocr_low_confidence = 0
     failure_cases = []
+    per_image_counts = []  # (expected, correct) per evaluated photo, for the bootstrap CI
 
     for row in gt_rows:
         fname = row['filename']
@@ -89,34 +114,30 @@ def evaluate(images_dir, ground_truth_path, out_dir):
             quality_flagged += 1
 
         working_path = deskew_image(img_path, output_path=os.path.join(out_dir, f"_deskewed_{fname}"))
-        # NOTE (accuracy review): preprocess_image (CLAHE contrast + Otsu
-        # binary threshold) was defined in the notebook but never actually
-        # called anywhere -- dead code. We tried wiring it in here and
-        # measured it directly: overall field accuracy on the same 15-image
-        # set DROPPED from 26.5% to 20.4%, and protein_g accuracy went to
-        # 0%. The binary threshold is destroying grayscale detail that
-        # Tesseract's own internal preprocessing uses more effectively, at
-        # least on real phone photos of small, dense label text. So it is
-        # deliberately left disconnected -- "we wrote a preprocessing step"
-        # is not the same claim as "we verified it helps", and here it
-        # measurably doesn't. Left available for future work with better
-        # threshold/kernel parameters, not on the critical path by default.
-        ocr = extract_text_with_confidence(working_path)
+        ocr = extract_text_best_effort(working_path)
         if not ocr['reliable']:
             ocr_low_confidence += 1
 
-        predicted = parse_nutrition(ocr['text'])
-        predicted_ingredients = parse_ingredients(ocr['text'])
-        predicted_allergens = set(detect_allergens(predicted_ingredients).keys())
+        predicted = ocr['nutrition']
+        predicted_ingredients = ocr['ingredients']
+        # FIX: allergens are now also pulled from the label's own "Contains:"
+        # statement, not just inferred from the ingredient list -- see
+        # detect_allergens_full()'s docstring. "May contain:" stays out of
+        # the precision/recall count below since it's precautionary, not a
+        # definite allergen the ground truth column represents.
+        allergen_result = detect_allergens_full(ocr['text'], predicted_ingredients)
+        predicted_allergens = set(allergen_result['confirmed'].keys())
         true_allergens = set(a.strip() for a in row.get('allergens_true', '').split(';') if a.strip())
 
         # --- numeric fields ---
+        img_expected, img_correct = 0, 0
         for field in NUMERIC_FIELDS:
             true_raw = row.get(field, '').strip()
             if true_raw == '':
                 continue  # not applicable on this label, don't count it
             true_val = float(true_raw)
             field_stats[field]['expected'] += 1
+            img_expected += 1
 
             if field not in predicted:
                 field_stats[field]['missing'] += 1
@@ -130,6 +151,7 @@ def evaluate(images_dir, ground_truth_path, out_dir):
             pred_val = predicted[field]
             if is_close(pred_val, true_val):
                 field_stats[field]['correct'] += 1
+                img_correct += 1
                 field_stats[field]['abs_errors'].append(abs(pred_val - true_val))
             else:
                 field_stats[field]['wrong'] += 1
@@ -138,6 +160,8 @@ def evaluate(images_dir, ground_truth_path, out_dir):
                     'true_value': true_val, 'predicted_value': pred_val,
                     'ocr_confidence': ocr['avg_confidence'],
                 })
+
+        per_image_counts.append((img_expected, img_correct))
 
         # --- allergens (per-row set comparison) ---
         tp = len(predicted_allergens & true_allergens)
@@ -176,6 +200,19 @@ def evaluate(images_dir, ground_truth_path, out_dir):
     if overall_expected:
         report_lines.append(f"\n**Overall field accuracy: {overall_correct}/{overall_expected} = {overall_correct/overall_expected:.1%}**\n")
 
+    ci = bootstrap_ci_over_images(per_image_counts)
+    n_evaluated = len(per_image_counts)
+    report_lines.append("## Sample-size caveat\n")
+    report_lines.append(f"This is a **{n_evaluated}-photo** evaluation. Treat it as a directional smoke test, not a benchmark:")
+    if ci and overall_expected:
+        report_lines.append(f"- Overall field accuracy is {overall_correct/overall_expected:.1%}, but resampling the photos gives a 95% bootstrap interval of "
+                            f"**{ci[0]:.1%} - {ci[1]:.1%}**. Fields within one photo are correlated (a blurry photo fails on almost every field at once), "
+                            "so the effective sample is closer to the number of photos than to the number of fields.")
+    report_lines.append("- Per-field rows above rest on even fewer photos (see the Expected column); a single photo moves a row by several points.")
+    report_lines.append("- The photos are a hand-picked mix of clean shots, angled shots and two-column labels, not a random sample of real-world labels.")
+    report_lines.append("- Before/after comparisons use the same photos the fixes were developed against, so improvements are likely overstated for unseen photos. "
+                        "A held-out set of photos not used during development is the next step.\n")
+
     precision = allergen_tp / (allergen_tp + allergen_fp) if (allergen_tp + allergen_fp) else float('nan')
     recall = allergen_tp / (allergen_tp + allergen_fn) if (allergen_tp + allergen_fn) else float('nan')
     f1 = 2 * precision * recall / (precision + recall) if precision and recall and (precision + recall) else float('nan')
@@ -202,6 +239,7 @@ def evaluate(images_dir, ground_truth_path, out_dir):
             'quality_flagged': quality_flagged,
             'ocr_low_confidence': ocr_low_confidence,
             'overall_field_accuracy': overall_correct / overall_expected if overall_expected else None,
+            'overall_field_accuracy_ci95_bootstrap_over_images': list(ci) if ci else None,
             'allergen_precision': precision,
             'allergen_recall': recall,
             'allergen_f1': f1,
