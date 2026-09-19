@@ -25,10 +25,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # nutrition_parser.py lives in src/, this test file lives in tests/ -- add the
 # sibling src/ folder too so this runs no matter which folder you invoke it from.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
+import nutrition_parser as npm
 from nutrition_parser import (
     parse_nutrition, parse_ingredients, detect_allergens,
     calculate_daily_value_percent, calculate_health_score, _clean_num,
     check_diet_compatibility,
+    detect_serving_column_index, extract_text_best_effort,
+    extract_text_with_confidence, _choose_serving_column,
 )
 
 
@@ -254,6 +257,129 @@ class TestCleanNum:
 
     def test_garbage_returns_none(self):
         assert _clean_num('abc') is None
+
+
+# ---------------------------------------------------------------------------
+# Robustness / multi-column regression tests (gaps #6 and #7)
+# ---------------------------------------------------------------------------
+
+class TestOcrConfidenceIgnoresBlankBoxes:
+    """Gap #7 (rotated image): a photo where Tesseract extracted NO text still
+    reported ~95% confidence and reliable=True, because its empty layout boxes
+    (high conf, blank text) were averaged in. Reproduced with real Tesseract on
+    a noise image and on an extremely blurred label; these tests lock the fix
+    in without needing Tesseract, by feeding a controlled OCR result."""
+
+    def _run(self, monkeypatch, tmp_path, conf, texts, full_text):
+        from PIL import Image
+        img_path = tmp_path / "label.png"
+        Image.new("RGB", (800, 1000), "white").save(img_path)
+        data = {"conf": conf, "text": texts}
+        monkeypatch.setattr(npm.pytesseract, "image_to_data", lambda *a, **k: data)
+        monkeypatch.setattr(npm.pytesseract, "image_to_string", lambda *a, **k: full_text)
+        return extract_text_with_confidence(str(img_path))
+
+    def test_blank_boxes_do_not_inflate_confidence(self, monkeypatch, tmp_path):
+        result = self._run(monkeypatch, tmp_path, [95, 95, 40], ["", "", "word"], "word")
+        assert result["avg_confidence"] == 40  # old behavior averaged in the blanks -> 76.7
+        assert result["reliable"] is False
+
+    def test_no_text_at_all_is_never_reliable(self, monkeypatch, tmp_path):
+        result = self._run(monkeypatch, tmp_path, [95, 95, 95], ["", " ", ""], "")
+        assert result["avg_confidence"] == 0
+        assert result["reliable"] is False
+
+    def test_confident_real_text_is_still_reliable(self, monkeypatch, tmp_path):
+        result = self._run(monkeypatch, tmp_path, [90, 92, 95, -1], ["Calories", "230", "Fat", ""], "Calories 230 Fat")
+        assert result["avg_confidence"] > 90
+        assert result["reliable"] is True
+
+
+class TestBestEffortReliabilityGuard:
+    """Gap #7: even with honest confidence, 'reliable' must also require that
+    real nutrition fields were actually parsed."""
+
+    def _patch(self, monkeypatch, text, conf=95.0):
+        ocr = {"text": text, "avg_confidence": conf, "reliable": conf >= 60, "low_confidence_words": []}
+        monkeypatch.setattr(npm, "extract_text_with_confidence", lambda *a, **k: ocr)
+        monkeypatch.setattr(npm, "extract_columns_if_present", lambda *a, **k: None)
+
+    def test_high_confidence_but_zero_fields_is_not_reliable(self, monkeypatch):
+        self._patch(monkeypatch, "some blurry unrelated words")
+        result = extract_text_best_effort("unused.png")
+        assert result["fields_found"] == 0
+        assert result["reliable"] is False
+        assert result["warnings"]
+
+    def test_full_extraction_stays_reliable(self, monkeypatch):
+        self._patch(monkeypatch, "Calories 230\nTotal Fat 8g\nSodium 160mg\nProtein 3g", conf=90.0)
+        result = extract_text_best_effort("unused.png")
+        assert result["fields_found"] >= 3
+        assert result["reliable"] is True
+        assert result["warnings"] == []
+
+
+class TestDualColumnLabels:
+    """Gap #6: dual-column ("Per Serving | Per Container") handling."""
+
+    def test_normal_single_column_label_is_not_mistaken_for_dual_column(self):
+        # Both phrases appear on every US label, far apart -- must NOT trigger.
+        text = ("Nutrition Facts\nServings per container 4\nServing size 1 cup (240g)\n"
+                "Amount per serving\nCalories 230\nTotal Fat 8g 10%\nSodium 160mg 7%")
+        assert detect_serving_column_index(text) == 0
+        result = parse_nutrition(text)
+        assert result["calories"] == 230
+        assert result["total_fat_g"] == 8.0
+
+    def test_per_serving_first_takes_first_amount(self):
+        text = "Calories Per Serving Per Container\n330 980\nTotal Fat 8g 10% 24g 31%\nSodium 220mg 9% 660mg 29%"
+        assert detect_serving_column_index(text) == 0
+        result = parse_nutrition(text)
+        assert result["calories"] == 330
+        assert result["total_fat_g"] == 8.0
+        assert result["sodium_mg"] == 220.0
+
+    def test_per_container_first_takes_second_amount(self):
+        # Previously this silently returned the per-container numbers (980 / 24 / 660).
+        text = "Calories Per Container Per Serving\n980 330\nTotal Fat 24g 31% 8g 10%\nSodium 660mg 29% 220mg 9%"
+        assert detect_serving_column_index(text) == 1
+        result = parse_nutrition(text)
+        assert result["calories"] == 330
+        assert result["total_fat_g"] == 8.0
+        assert result["sodium_mg"] == 220.0
+
+    def test_per_container_first_with_missing_second_amount_is_dropped_not_guessed(self):
+        text = "Per Container | Per Serving\nCalories 980 330\nTrans Fat 0g"
+        result = parse_nutrition(text)
+        assert result["calories"] == 330
+        assert "trans_fat_g" not in result  # only one amount on the row: refuse to guess the column
+
+    def test_dual_column_header_line_is_not_a_serving_size(self):
+        result = parse_nutrition("Per Serving | Per Container\nCalories 330 980")
+        assert "serving_size" not in result
+
+    def test_calories_regex_tolerates_header_words(self):
+        assert parse_nutrition("Calories Per Serving 330")["calories"] == 330
+
+    def test_choose_serving_column_prefers_explicit_header(self):
+        columns = ["Amount Per Container\nTotal Fat 24g", "Amount Per Serving\nTotal Fat 8g"]
+        col_parses = [parse_nutrition(c) for c in columns]
+        assert _choose_serving_column(columns, col_parses) == (1, "header")
+
+    def test_choose_serving_column_falls_back_when_no_clear_header(self):
+        columns = ["Total Fat 8g\nSodium 160mg", "Total Fat 24g"]
+        col_parses = [parse_nutrition(c) for c in columns]
+        assert _choose_serving_column(columns, col_parses) == (0, "most_fields")
+
+
+class TestTruncatedCalories:
+    def test_clipped_first_letters_are_repaired(self):
+        # Real Tesseract output on a 30-degree-rotated synthetic label.
+        assert parse_nutrition("ories 230\nTotal Fat 8g")["calories"] == 230
+
+    def test_ordinary_words_ending_in_ories_are_untouched(self):
+        result = parse_nutrition("Categories 12\nStories 3\nTotal Fat 8g")
+        assert "calories" not in result
 
 
 if __name__ == '__main__':
