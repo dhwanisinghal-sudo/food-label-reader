@@ -824,7 +824,39 @@ ALLERGEN_KEYWORDS = {
     'Molluscs': ['mussel', 'oyster', 'squid', 'snail', 'clam', 'scallop'],
 }
 
-VEGAN_CONFLICT_KEYWORDS = ['milk', 'whey', 'casein', 'egg', 'honey', 'gelatin', 'lard', 'meat', 'fish', 'chicken', 'beef', 'pork']
+# Sourced and cited keyword lists (previously an uncited, ad-hoc list per
+# diet -- also previously ONLY implemented for vegan in this Python file,
+# while nutritionParser.js had all five; ported here for consistency).
+# See nutritionParser.js's matching block for full source citations.
+VEGAN_CONFLICT_KEYWORDS = [
+    'milk', 'whey', 'casein', 'egg', 'honey', 'gelatin', 'lard', 'meat',
+    'fish', 'chicken', 'beef', 'pork', 'carmine', 'cochineal', 'isinglass',
+    'shellac', 'beeswax', 'lanolin',
+]
+VEGETARIAN_CONFLICT_KEYWORDS = ['gelatin', 'lard', 'meat', 'fish', 'chicken', 'beef', 'pork', 'rennet', 'isinglass']
+
+HALAL_KOSHER_DEFINITE_CONFLICTS = ['pork', 'bacon', 'ham', 'lard', 'alcohol', 'wine', 'rum', 'beer', 'ethanol', 'blood']
+HALAL_KOSHER_UNCERTAIN_INGREDIENTS = [
+    'gelatin', 'rennet', 'rennin', 'pepsin', 'whey', 'mono- and diglycerides',
+    'monoglycerides', 'diglycerides', 'l-cysteine', 'natural flavor',
+    'natural flavors', 'glycerin', 'glycerine', 'vanilla extract',
+]
+
+PALEO_CONFLICT_KEYWORDS = [
+    'sugar', 'wheat', 'corn', 'dairy', 'milk', 'legume', 'soy', 'peanut',
+    'artificial', 'rice', 'oat', 'barley', 'lentil', 'bean', 'potato starch',
+    'canola oil', 'soybean oil',
+]
+HIGH_CARB_KEYWORDS = ['sugar', 'corn syrup', 'wheat flour', 'rice', 'maltodextrin', 'dextrose']
+
+FODMAP_CONFLICT_KEYWORDS = [
+    'garlic', 'onion', 'honey', 'high fructose corn syrup', 'wheat', 'rye',
+    'inulin', 'chicory root', 'fructo-oligosaccharide', 'fos',
+    'galacto-oligosaccharide', 'gos', 'sorbitol', 'mannitol', 'xylitol',
+    'maltitol', 'isomalt', 'lactitol', 'erythritol',
+    'e420', 'e421', 'e953', 'e965', 'e966', 'e967', 'e968',
+    'chickpea', 'lentil', 'kidney bean', 'cashew', 'pistachio',
+]
 
 # BUG FIX (found during accuracy review): plain substring matching flagged
 # "Eggplant" as an Egg allergen/vegan conflict because "egg" is a substring
@@ -943,7 +975,86 @@ def detect_allergens_full(text, ingredients_list):
 def check_diet_compatibility(ingredients_list):
     text = " ".join(ingredients_list).lower()
     vegan_conflicts = [kw for kw in VEGAN_CONFLICT_KEYWORDS if _keyword_matches(kw, text)]
-    return {'vegan_friendly': len(vegan_conflicts) == 0, 'vegan_conflicts': vegan_conflicts}
+    vegetarian_conflicts = [kw for kw in VEGETARIAN_CONFLICT_KEYWORDS if _keyword_matches(kw, text)]
+    return {
+        'vegan_friendly': len(vegan_conflicts) == 0, 'vegan_conflicts': vegan_conflicts,
+        'vegetarian_friendly': len(vegetarian_conflicts) == 0, 'vegetarian_conflicts': vegetarian_conflicts,
+    }
+
+
+def check_halal_kosher(ingredients_list):
+    """REAL, STRUCTURAL LIMIT (not a bug -- can't be fixed by better code):
+    actual halal/kosher certification depends on facts that never appear in
+    a printed ingredient list (slaughter method, shared equipment,
+    supplier-specific sourcing of ambiguous ingredients like gelatin).
+    Multiple published halal ingredient guides consulted while building
+    this say exactly that about gelatin/mono-diglycerides/glycerin: "if
+    derived from a halal-slaughtered animal, then halal" -- i.e. even
+    domain-expert references can't give a yes/no from the ingredient NAME
+    alone. So this returns two tiers instead of one boolean: ingredients
+    that are essentially always non-halal/non-kosher regardless of source,
+    versus ones that COULD be either depending on unlisted sourcing. A
+    result with no matches in either list means "no red flags found by
+    this text screen", not "certified halal/kosher"."""
+    text = " ".join(ingredients_list).lower()
+    definite = [kw for kw in HALAL_KOSHER_DEFINITE_CONFLICTS if _keyword_matches(kw, text)]
+    uncertain = [kw for kw in HALAL_KOSHER_UNCERTAIN_INGREDIENTS if _keyword_matches(kw, text)]
+    return {
+        'halal_kosher_safe': len(definite) == 0 and len(uncertain) == 0,
+        'definite_conflicts': definite,
+        'uncertain_ingredients': uncertain,
+        'note': 'Ingredient-text screening only -- NOT a substitute for official halal/kosher certification, which depends on slaughter method and supply-chain facts not present on a printed label.',
+    }
+
+
+def check_keto_compatibility(nutrition, ingredients_list):
+    """The <=10g net carbs PER SERVING threshold is a common community/app
+    rule-of-thumb proxy, not an official clinical standard -- published
+    ketogenic-diet guidance defines ketosis targets as ~20-50g net carbs
+    PER DAY, which isn't directly convertible to one per-serving cutoff
+    without knowing how many servings of other foods someone eats that day.
+    Stated here rather than implied as a certified number."""
+    carbs = nutrition.get('total_carbs_g', 0) or 0
+    fiber = nutrition.get('fiber_g', 0) or 0
+    net_carbs = max(carbs - fiber, 0)
+    text = " ".join(ingredients_list).lower()
+    conflicts = [kw for kw in HIGH_CARB_KEYWORDS if _keyword_matches(kw, text)]
+    return {'keto_friendly': net_carbs <= 10 and len(conflicts) == 0, 'net_carbs_g': net_carbs, 'conflicts': conflicts}
+
+
+def check_paleo_compatibility(ingredients_list):
+    text = " ".join(ingredients_list).lower()
+    conflicts = [kw for kw in PALEO_CONFLICT_KEYWORDS if _keyword_matches(kw, text)]
+    return {'paleo_friendly': len(conflicts) == 0, 'conflicts': conflicts}
+
+
+def check_fodmap_compatibility(ingredients_list):
+    text = " ".join(ingredients_list).lower()
+    conflicts = [kw for kw in FODMAP_CONFLICT_KEYWORDS if _keyword_matches(kw, text)]
+    return {'low_fodmap': len(conflicts) == 0, 'conflicts': conflicts}
+
+
+def check_all_diet_compatibility(nutrition, ingredients_list):
+    if not ingredients_list:
+        return None
+    diet = check_diet_compatibility(ingredients_list)
+    halal_kosher = check_halal_kosher(ingredients_list)
+    keto = check_keto_compatibility(nutrition or {}, ingredients_list)
+    paleo = check_paleo_compatibility(ingredients_list)
+    fodmap = check_fodmap_compatibility(ingredients_list)
+    return {
+        'vegan': {'friendly': diet['vegan_friendly'], 'conflicts': diet['vegan_conflicts']},
+        'vegetarian': {'friendly': diet['vegetarian_friendly'], 'conflicts': diet['vegetarian_conflicts']},
+        'halal_kosher': {
+            'friendly': halal_kosher['halal_kosher_safe'],
+            'definite_conflicts': halal_kosher['definite_conflicts'],
+            'uncertain_ingredients': halal_kosher['uncertain_ingredients'],
+            'note': halal_kosher['note'],
+        },
+        'keto': {'friendly': keto['keto_friendly'], 'net_carbs_g': keto['net_carbs_g'], 'conflicts': keto['conflicts']},
+        'paleo': {'friendly': paleo['paleo_friendly'], 'conflicts': paleo['conflicts']},
+        'low_fodmap': {'friendly': fodmap['low_fodmap'], 'conflicts': fodmap['conflicts']},
+    }
 
 
 # ---------------------------------------------------------------------------
