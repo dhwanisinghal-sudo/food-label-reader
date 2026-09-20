@@ -9,15 +9,15 @@ protein_jerky_bag.jpg,total_carbs_g,MISSING,5.0,,36.8
 protein_jerky_bag.jpg,fiber_g,MISSING,0.0,,36.8
 protein_jerky_bag.jpg,protein_g,MISSING,21.0,,36.8
 cheetos_crunchy.jpg,total_sugars_g,MISSING,0.5,,90.5
-cheetos_crunchy.jpg,ALLERGENS,MISMATCH,Milk,Milk/Dairy,90.5
 lucerne_liquid_egg_whites.jpg,added_sugars_g,MISSING,0.0,,84.0
-lucerne_liquid_egg_whites.jpg,ALLERGENS,MISMATCH,Eggs,(none),84.0
+lucerne_liquid_egg_whites.jpg,ALLERGENS,MISMATCH,Egg,(none),84.0
 costco_organic_granny_smith_apple_chips.jpg,total_fat_g,MISSING,0.0,,58.1
 costco_organic_granny_smith_apple_chips.jpg,fiber_g,MISSING,5.0,,58.1
 costco_organic_granny_smith_apple_chips.jpg,added_sugars_g,MISSING,0.0,,58.1
 costco_organic_granny_smith_apple_chips.jpg,protein_g,MISSING,0.5,,58.1
 green_box_veggie_protein_product.jpg,trans_fat_g,MISSING,0.0,,58.6
 green_box_veggie_protein_product.jpg,cholesterol_mg,MISSING,0.0,,58.6
+green_box_veggie_protein_product.jpg,added_sugars_g,MISSING,0.0,,58.6
 jenis_ice_cream_double_dough.jpg,calories,MISSING,330.0,,45.5
 jenis_ice_cream_double_dough.jpg,total_fat_g,MISSING,20.0,,45.5
 jenis_ice_cream_double_dough.jpg,saturated_fat_g,MISSING,11.0,,45.5
@@ -38,17 +38,18 @@ savoritz_parmesan_crisps.jpg,fiber_g,MISSING,0.0,,39.4
 savoritz_parmesan_crisps.jpg,total_sugars_g,MISSING,0.0,,39.4
 savoritz_parmesan_crisps.jpg,added_sugars_g,MISSING,0.0,,39.4
 savoritz_parmesan_crisps.jpg,protein_g,MISSING,13.0,,39.4
-savoritz_parmesan_crisps.jpg,ALLERGENS,MISMATCH,Milk,(none),39.4
+savoritz_parmesan_crisps.jpg,ALLERGENS,MISMATCH,Milk/Dairy,(none),39.4
 bread_nutrition_label_generic.jpg,total_fat_g,MISSING,1.5,,83.8
 bread_nutrition_label_generic.jpg,saturated_fat_g,MISSING,0.3,,83.8
 bread_nutrition_label_generic.jpg,trans_fat_g,MISSING,0.5,,83.8
+bread_nutrition_label_generic.jpg,total_carbs_g,MISSING,26.0,,83.8
+bread_nutrition_label_generic.jpg,fiber_g,MISSING,3.0,,83.8
 dr_praegers_california_veggie_burger.jpg,trans_fat_g,MISSING,0.0,,92.0
 dr_praegers_california_veggie_burger.jpg,fiber_g,MISSING,7.0,,92.0
 cucumber_avocado_tomato_salad_nutrition.jpg,protein_g,MISSING,3.6,,94.3
 trader_joes_kung_pao_chicken.jpg,saturated_fat_g,WRONG,2.0,29.0,74.5
 trader_joes_kung_pao_chicken.jpg,trans_fat_g,MISSING,0.0,,74.5
-trader_joes_kung_pao_chicken.jpg,cholesterol_mg,WRONG,30.0,20.0,74.5
-trader_joes_kung_pao_chicken.jpg,sodium_mg,WRONG,690.0,30.0,74.5
+trader_joes_kung_pao_chicken.jpg,cholesterol_mg,MISSING,30.0,,74.5
 trader_joes_kung_pao_chicken.jpg,total_sugars_g,MISSING,8.0,,74.5
 trader_joes_sea_salted_potato_crisps.jpg,trans_fat_g,MISSING,0.0,,78.8
 trader_joes_sea_salted_potato_crisps.jpg,cholesterol_mg,MISSING,0.0,,78.8
@@ -58,5 +59,5 @@ trader_joes_sea_salted_potato_crisps.jpg,fiber_g,MISSING,0.5,,78.8
 trader_joes_sea_salted_potato_crisps.jpg,total_sugars_g,MISSING,0.0,,78.8
 trader_joes_sea_salted_potato_crisps.jpg,added_sugars_g,MISSING,0.0,,78.8
 trader_joes_sea_salted_potato_crisps.jpg,protein_g,MISSING,1.0,,78.8
-whole_wheat_pasta_kroger.jpg,ALLERGENS,MISMATCH,Wheat;may contain Egg,Wheat/Gluten,84.4
 almonds_nutrition_label.jpg,sodium_mg,WRONG,1.0,23.0,82.6
+almonds_nutrition_label.jpg,total_carbs_g,MISSING,20.0,,82.6
