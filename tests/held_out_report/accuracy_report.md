@@ -37,7 +37,7 @@ Precision: 100.0% | Recall: 11.1% | F1: 20.0%
 
 ## Automatic OCR value corrections
 
-- Character-substitution fixes (misread O/o/I/l treated as a digit before parsing): **7** values across 8 photos
+- Character-substitution fixes (misread O/o/I/l treated as a digit before parsing): **9** values across 8 photos
 - %DV cross-check overrides (a parsed value disagreed too strongly with the label's own printed %DV and was replaced by the %DV-derived value): **2** values
 - These counts are mechanical corrections applied automatically during parsing, not manual corrections made by a person after the fact. A value that was auto-corrected can still end up WRONG relative to ground truth (see failure_cases.csv) -- these numbers measure how often the mechanism fired, not how often it fired correctly.
 
