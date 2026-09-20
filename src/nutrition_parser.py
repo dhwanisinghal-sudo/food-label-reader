@@ -306,9 +306,30 @@ def extract_text_best_effort(image_path, langs="eng+hin"):
 # alongside a "Per Container" number from the other column.
 
 def _reconstruct_columns_from_words(data, image_width, min_gap_fraction=0.12):
-    """Groups pytesseract image_to_data words into two columns if a single,
-    wide, unambiguous horizontal gap splits them -- otherwise returns
-    [None], meaning "no confident column split, don't use this path"."""
+    """Groups pytesseract image_to_data words into two columns.
+
+    REAL FIX (found by measuring an actual clean, high-confidence
+    dual-column photo -- lucky_charms_cereal.jpg): the original version of
+    this function looked for the single biggest gap among ALL word
+    centers, but on a real, professionally-typeset label the two value
+    columns are printed close together (measured ~120px apart on that
+    photo, a small fraction of the image width) while the single BIGGEST
+    gap in the whole image is almost always somewhere irrelevant --
+    margins, a graphic, decorative whitespace -- not the true column
+    boundary. That made the old global-gap approach structurally unable
+    to find genuine, tightly-spaced real-world dual-value columns.
+
+    This version instead looks specifically at tokens that LOOK LIKE
+    nutrition values (start with a digit, optionally followed by g/mg/%)
+    and finds the gap among just THOSE tokens' x-positions -- on the same
+    real photo, this correctly separates two tight, consistent clusters at
+    x~1406-1427 and x~1509-1545 across many rows, confirmed by checking
+    the same column recurs on Calories, Calories from Fat, Saturated Fat,
+    Cholesterol, Potassium and Dietary Fiber rows independently. Falls
+    back to the full-word-gap approach afterward, so a chance case where
+    that STILL works (as on the synthetic test image originally built for
+    this) isn't lost.
+    """
     words = []
     n = len(data.get('text', []))
     for i in range(n):
@@ -330,14 +351,36 @@ def _reconstruct_columns_from_words(data, image_width, min_gap_fraction=0.12):
     if len(words) < 6:
         return [None]  # too little text to make a meaningful column call
 
-    centers = sorted(w['left'] + w['width'] / 2 for w in words)
-    gaps = [(centers[i + 1] - centers[i], centers[i], centers[i + 1]) for i in range(len(centers) - 1)]
-    biggest_gap, gap_start, gap_end = max(gaps, key=lambda g: g[0])
+    value_like = re.compile(r'^[0-9][0-9.]*\s*(g|mg|%)?$', re.IGNORECASE)
+    value_words = [w for w in words if value_like.match(w['text'])]
 
-    if biggest_gap < image_width * min_gap_fraction:
-        return [None]  # no gap wide enough to be a real column boundary, not just word spacing
+    split_x = None
+    if len(value_words) >= 6:
+        value_centers = sorted(w['left'] + w['width'] / 2 for w in value_words)
+        value_gaps = [(value_centers[i + 1] - value_centers[i], value_centers[i], value_centers[i + 1])
+                      for i in range(len(value_centers) - 1)]
+        biggest_value_gap, vgap_start, vgap_end = max(value_gaps, key=lambda g: g[0])
+        # A real dual-value column boundary recurs across many rows, so it
+        # should be comfortably bigger than ordinary digit/unit spacing
+        # within one number (a few px) but doesn't need to be a large
+        # fraction of the image width -- unlike the whole-word check below,
+        # which does, because whole-word gaps include much wider natural
+        # gaps (indentation, label-to-value spacing) that a raw threshold
+        # must rule out.
+        if biggest_value_gap > 25:
+            left_count = sum(1 for c in value_centers if c < (vgap_start + vgap_end) / 2)
+            right_count = len(value_centers) - left_count
+            if left_count >= 3 and right_count >= 3:
+                split_x = (vgap_start + vgap_end) / 2
 
-    split_x = (gap_start + gap_end) / 2
+    if split_x is None:
+        centers = sorted(w['left'] + w['width'] / 2 for w in words)
+        gaps = [(centers[i + 1] - centers[i], centers[i], centers[i + 1]) for i in range(len(centers) - 1)]
+        biggest_gap, gap_start, gap_end = max(gaps, key=lambda g: g[0])
+        if biggest_gap < image_width * min_gap_fraction:
+            return [None]  # no gap wide enough to be a real column boundary, not just word spacing
+        split_x = (gap_start + gap_end) / 2
+
     left_words = [w for w in words if (w['left'] + w['width'] / 2) < split_x]
     right_words = [w for w in words if (w['left'] + w['width'] / 2) >= split_x]
 
