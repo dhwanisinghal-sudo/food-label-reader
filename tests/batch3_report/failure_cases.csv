@@ -1,0 +1,10 @@
+filename,field,type,true_value,predicted_value,ocr_confidence
+six_food_shopping_mistakes_cereal.jpg,trans_fat_g,MISSING,0.0,,71.6
+worst_chemicals_fiber_cereal_cropped.jpg,calories,MISSING,190.0,,71.8
+nantucket_dark_chocolate_cookie.jpg,total_fat_g,MISSING,7.0,,58.9
+nantucket_dark_chocolate_cookie.jpg,trans_fat_g,MISSING,0.0,,58.9
+nantucket_dark_chocolate_cookie.jpg,protein_g,MISSING,1.0,,58.9
+kroger_candy_pack.jpg,total_fat_g,WRONG,7.0,79.0,87.5
+kroger_candy_pack.jpg,trans_fat_g,MISSING,0.0,,87.5
+kroger_candy_pack.jpg,protein_g,MISSING,1.0,,87.5
+trader_joes_ginger_bread_granola.jpg,calories,WRONG,250.0,290,70.5
