@@ -32,6 +32,7 @@ from nutrition_parser import (
     check_diet_compatibility,
     detect_serving_column_index, extract_text_best_effort,
     extract_text_with_confidence, _choose_serving_column,
+    calculate_fsa_npm_score,
 )
 
 
@@ -395,6 +396,48 @@ class TestTruncatedCalories:
     def test_ordinary_words_ending_in_ories_are_untouched(self):
         result = parse_nutrition("Categories 12\nStories 3\nTotal Fat 8g")
         assert "calories" not in result
+
+
+class TestFsaNpmScore:
+    # Every case here reproduces one of the six official worked examples
+    # from "Nutrient Profiling Technical Guidance", Dept of Health, Jan
+    # 2011 (Section 4), to lock in that this implementation matches the
+    # real, published, government-adopted model exactly -- not just
+    # internally-consistent numbers we made up ourselves.
+    def test_worked_example_1_fruit_fromage_frais(self):
+        nutrition = {'calories': 459 / 4.184, 'saturated_fat_g': 1.8, 'total_sugars_g': 13.4,
+                     'sodium_mg': 0.1, 'fiber_g': 0.6, 'protein_g': 6.5}
+        result = calculate_fsa_npm_score(nutrition, {'amount_g': 100.0, 'ambiguous': False}, fvn_percent=8)
+        assert result['score'] == 0
+
+    def test_worked_example_2_vanilla_ice_cream(self):
+        nutrition = {'calories': 741 / 4.184, 'saturated_fat_g': 6.1, 'total_sugars_g': 18.7,
+                     'sodium_mg': 60, 'fiber_g': 0, 'protein_g': 3.6}
+        result = calculate_fsa_npm_score(nutrition, {'amount_g': 100.0, 'ambiguous': False})
+        assert result['score'] == 12
+        assert result['classification'] == 'less healthy'
+        assert result['protein_excluded'] is True  # A points >= 11, FVN points < 5
+
+    def test_worked_example_4_tomato_soup(self):
+        nutrition = {'calories': 155 / 4.184, 'saturated_fat_g': 0.4, 'total_sugars_g': 3.6,
+                     'sodium_mg': 471, 'fiber_g': 0.2, 'protein_g': 0.3}
+        result = calculate_fsa_npm_score(nutrition, {'amount_g': 100.0, 'ambiguous': False})
+        assert result['score'] == 5
+
+    def test_worked_example_5_cereal_bar_with_fruit_content(self):
+        nutrition = {'calories': 1504 / 4.184, 'saturated_fat_g': 1.4, 'total_sugars_g': 35.7,
+                     'sodium_mg': 0, 'fiber_g': 4.8, 'protein_g': 4.3}
+        result = calculate_fsa_npm_score(nutrition, {'amount_g': 100.0, 'ambiguous': False}, fvn_percent=46)
+        assert result['score'] == 6
+
+    def test_refuses_to_guess_when_serving_size_is_ambiguous(self):
+        result = calculate_fsa_npm_score({'calories': 100}, {'amount_g': None, 'ambiguous': True})
+        assert result['score'] is None
+        assert 'ambiguous' in result['reason'].lower() or 'could not be determined' in result['reason'].lower()
+
+    def test_refuses_when_no_serving_size_line_was_found_at_all(self):
+        result = calculate_fsa_npm_score({'calories': 100}, None)
+        assert result['score'] is None
 
 
 if __name__ == '__main__':
