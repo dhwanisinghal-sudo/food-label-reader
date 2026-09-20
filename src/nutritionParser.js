@@ -339,12 +339,68 @@ function detectAllergens(ingredients) {
   return detected;
 }
 
-const VEGAN_CONFLICT_KEYWORDS = ['milk', 'whey', 'casein', 'egg', 'honey', 'gelatin', 'lard', 'meat', 'fish', 'chicken', 'beef', 'pork'];
-const VEGETARIAN_CONFLICT_KEYWORDS = ['gelatin', 'lard', 'meat', 'fish', 'chicken', 'beef', 'pork', 'rennet'];
-const NON_HALAL_KOSHER_KEYWORDS = ['pork', 'lard', 'gelatin', 'alcohol', 'wine', 'rum', 'bacon', 'ham'];
+// Sourced and cited keyword lists (previously an uncited, ad-hoc 6-12 word
+// list per diet). None of these make any check "certified" -- see the
+// halal/kosher function's own comment for why that's a hard, structural
+// limit that no ingredient-text keyword list can cross -- but a sourced,
+// broader list is a genuine accuracy improvement over an arbitrary one.
+
+// The Vegan Society (https://www.vegansociety.com/go-vegan/definition-veganism)
+// coined "vegan" and defines it as excluding all forms of animal
+// exploitation -- meat, fish, dairy, eggs, honey, and animal-derived
+// processing aids/additives (gelatin, carmine, isinglass, lard).
+const VEGAN_CONFLICT_KEYWORDS = [
+  'milk', 'whey', 'casein', 'egg', 'honey', 'gelatin', 'lard', 'meat',
+  'fish', 'chicken', 'beef', 'pork', 'carmine', 'cochineal', 'isinglass',
+  'shellac', 'beeswax', 'lanolin',
+];
+const VEGETARIAN_CONFLICT_KEYWORDS = ['gelatin', 'lard', 'meat', 'fish', 'chicken', 'beef', 'pork', 'rennet', 'isinglass'];
+
+// Halal/kosher: sourced from multiple published halal-ingredient guides
+// (Halal Foundation, CIOGC, Islamic Food and Nutrition Council references)
+// cross-checked against each other. Split into two tiers deliberately --
+// see checkHalalKosher()'s docstring for why this matters and what it does
+// NOT mean.
+const HALAL_KOSHER_DEFINITE_CONFLICTS = [
+  'pork', 'bacon', 'ham', 'lard', 'alcohol', 'wine', 'rum', 'beer',
+  'ethanol', 'blood',
+];
+const HALAL_KOSHER_UNCERTAIN_INGREDIENTS = [
+  'gelatin', 'rennet', 'rennin', 'pepsin', 'whey', 'mono- and diglycerides',
+  'monoglycerides', 'diglycerides', 'l-cysteine', 'natural flavor',
+  'natural flavors', 'glycerin', 'glycerine', 'vanilla extract',
+];
+
+// Paleo: based on Loren Cordain's original defining framework (the
+// researcher who popularized the modern paleo diet) -- excludes grains,
+// legumes, dairy, refined sugar, and processed/refined oils, on the
+// premise these are foods agriculture introduced after the Paleolithic era.
+const PALEO_CONFLICT_KEYWORDS = [
+  'sugar', 'wheat', 'corn', 'dairy', 'milk', 'legume', 'soy', 'peanut',
+  'artificial', 'rice', 'oat', 'barley', 'lentil', 'bean', 'potato starch',
+  'canola oil', 'soybean oil',
+];
+
+// High-carb keywords used by the keto check below (separate from the
+// numeric net-carbs threshold, which does the primary classification).
 const HIGH_CARB_KEYWORDS = ['sugar', 'corn syrup', 'wheat flour', 'rice', 'maltodextrin', 'dextrose'];
-const PALEO_CONFLICT_KEYWORDS = ['sugar', 'wheat', 'corn', 'dairy', 'milk', 'legume', 'soy', 'peanut', 'artificial'];
-const FODMAP_CONFLICT_KEYWORDS = ['garlic', 'onion', 'honey', 'high fructose corn syrup', 'wheat', 'inulin', 'sorbitol', 'xylitol'];
+
+// FODMAP: sourced from Monash University's own published categories and
+// label-reading guidance (https://www.monashfodmap.com/blog/update-label-reading/,
+// https://www.monashfodmap.com/about-fodmap-and-ibs/high-and-low-fodmap-foods/)
+// -- the university that defined the FODMAP framework and runs the
+// original low-FODMAP research program. Covers all four FODMAP categories
+// (oligosaccharides/fructans+GOS, disaccharides/lactose, monosaccharides/
+// excess fructose, polyols), including the specific polyol E-numbers
+// Monash's own guidance says to check for on labels.
+const FODMAP_CONFLICT_KEYWORDS = [
+  'garlic', 'onion', 'honey', 'high fructose corn syrup', 'wheat', 'rye',
+  'inulin', 'chicory root', 'fructo-oligosaccharide', 'fos',
+  'galacto-oligosaccharide', 'gos', 'sorbitol', 'mannitol', 'xylitol',
+  'maltitol', 'isomalt', 'lactitol', 'erythritol',
+  'e420', 'e421', 'e953', 'e965', 'e966', 'e967', 'e968',
+  'chickpea', 'lentil', 'kidney bean', 'cashew', 'pistachio',
+];
 
 function checkDietCompatibility(ingredients) {
   const text = ingredients.join(' ').toLowerCase();
@@ -358,10 +414,37 @@ function checkDietCompatibility(ingredients) {
   };
 }
 
+// REAL, STRUCTURAL LIMIT (not a bug, can't be code-fixed): actual halal and
+// kosher certification depends on facts that never appear in a printed
+// ingredient list -- HOW an animal was slaughtered, whether equipment was
+// shared with non-halal/non-kosher production, and the specific supplier
+// of ambiguous ingredients like gelatin or rennet (pig-derived vs.
+// halal-slaughtered-beef-derived vs. plant/microbial). Multiple published
+// halal ingredient guides consulted while building this list say exactly
+// this about ingredients like gelatin, mono/diglycerides, and glycerin:
+// "if derived from a halal-slaughtered animal, then halal", "if animal
+// source is used, it is suspected" -- meaning even domain-expert reference
+// guides can't give a yes/no answer from the ingredient NAME alone.
+//
+// So this function reports two tiers instead of one boolean:
+// - `definiteConflicts`: ingredients that are essentially always
+//   non-halal/non-kosher regardless of source (pork, alcohol, blood).
+// - `uncertainIngredients`: ingredients that COULD be halal/kosher or
+//   COULD NOT be, depending on unlisted sourcing -- flagged for the user
+//   to check the product's actual certification, not silently passed.
+// A product with zero matches in either list is not "certified halal/
+// kosher" -- it only means this text-based check found no red flags,
+// which is a meaningfully weaker claim, and the API response should say so.
 function checkHalalKosher(ingredients) {
   const text = ingredients.join(' ').toLowerCase();
-  const conflicts = NON_HALAL_KOSHER_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
-  return { halalKosherSafe: conflicts.length === 0, conflicts };
+  const definiteConflicts = HALAL_KOSHER_DEFINITE_CONFLICTS.filter((kw) => _keywordMatches(kw, text));
+  const uncertainIngredients = HALAL_KOSHER_UNCERTAIN_INGREDIENTS.filter((kw) => _keywordMatches(kw, text));
+  return {
+    halalKosherSafe: definiteConflicts.length === 0 && uncertainIngredients.length === 0,
+    definiteConflicts,
+    uncertainIngredients,
+    note: 'Ingredient-text screening only -- NOT a substitute for official halal/kosher certification, which depends on slaughter method and supply-chain facts not present on a printed label.',
+  };
 }
 
 function checkKetoCompatibility(nutrition, ingredients) {
@@ -374,6 +457,13 @@ function checkKetoCompatibility(nutrition, ingredients) {
   // keyword as one literal — that's fine here, \b still anchors on the
   // phrase's outer edges (e.g. won't match "unicorn syrupy" mid-word).
   const conflicts = HIGH_CARB_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
+  // The <=10g net carbs PER SERVING threshold is a common community/app
+  // rule-of-thumb proxy, not an official clinical standard -- published
+  // ketogenic-diet guidance (e.g. Cleveland Clinic, peer-reviewed keto
+  // studies) defines ketosis targets as ~20-50g net carbs PER DAY, which
+  // isn't directly convertible to a single per-serving cutoff without
+  // knowing how many servings of other foods someone eats that day. This
+  // is stated here rather than implied as a certified number.
   return { ketoFriendly: netCarbs <= 10 && conflicts.length === 0, netCarbsG: netCarbs, conflicts };
 }
 
@@ -399,7 +489,12 @@ function checkAllDietCompatibility(nutrition, ingredients) {
   return {
     vegan: { friendly: diet.veganFriendly, conflicts: diet.veganConflicts },
     vegetarian: { friendly: diet.vegetarianFriendly, conflicts: diet.vegetarianConflicts },
-    halalKosher: { friendly: halalKosher.halalKosherSafe, conflicts: halalKosher.conflicts },
+    halalKosher: {
+      friendly: halalKosher.halalKosherSafe,
+      definiteConflicts: halalKosher.definiteConflicts,
+      uncertainIngredients: halalKosher.uncertainIngredients,
+      note: halalKosher.note,
+    },
     keto: { friendly: keto.ketoFriendly, netCarbsG: keto.netCarbsG, conflicts: keto.conflicts },
     paleo: { friendly: paleo.paleoFriendly, conflicts: paleo.conflicts },
     lowFodmap: { friendly: fodmap.lowFodmap, conflicts: fodmap.conflicts },
