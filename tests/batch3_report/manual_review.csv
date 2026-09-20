@@ -1,0 +1,10 @@
+filename,field,type,true_value,predicted_value,ocr_confidence,manually_corrected_value,reviewer,review_date,notes
+six_food_shopping_mistakes_cereal.jpg,trans_fat_g,MISSING,0.0,,71.6,0.0,Claude (visual re-check against uploaded photos),2026-09-20,"Confirmed: label prints ""Trans Fat 0g"" clearly. Parser missed extracting it (MISSING), but the ground truth value is correct."
+worst_chemicals_fiber_cereal_cropped.jpg,calories,MISSING,190.0,,71.8,190.0,Claude (visual re-check against uploaded photos),2026-09-20,"Confirmed: label prints ""Calories 190"" (Cereal column, no milk) clearly at the top. Parser missed it."
+nantucket_dark_chocolate_cookie.jpg,total_fat_g,MISSING,7.0,,58.9,7.0,Claude (visual re-check against uploaded photos),2026-09-20,"Confirmed: label prints ""Total Fat 7g"" clearly."
+nantucket_dark_chocolate_cookie.jpg,trans_fat_g,MISSING,0.0,,58.9,0.0,Claude (visual re-check against uploaded photos),2026-09-20,"Confirmed: label prints ""Trans Fat 0g"" clearly."
+nantucket_dark_chocolate_cookie.jpg,protein_g,MISSING,1.0,,58.9,1.0,Claude (visual re-check against uploaded photos),2026-09-20,"Confirmed: label prints ""Protein 1g"" clearly."
+kroger_candy_pack.jpg,total_fat_g,WRONG,7.0,79.0,87.5,7.0,Claude (visual re-check against uploaded photos),2026-09-20,"Confirmed: label prints ""Total Fat 7g"". Parser predicted 79.0 -- a digit-unit-fusion misread (7g read as 79), same bug class as previously documented, not yet fully patched for this case."
+kroger_candy_pack.jpg,trans_fat_g,MISSING,0.0,,87.5,0.0,Claude (visual re-check against uploaded photos),2026-09-20,"Confirmed: label prints ""Trans Fat 0g"" clearly."
+kroger_candy_pack.jpg,protein_g,MISSING,1.0,,87.5,1.0,Claude (visual re-check against uploaded photos),2026-09-20,"Confirmed: label prints ""Protein 1g"" clearly."
+trader_joes_ginger_bread_granola.jpg,calories,WRONG,250.0,290,70.5,250.0,Claude (visual re-check against uploaded photos),2026-09-20,"Confirmed: label prints ""Calories 250"" in large font. Parser predicted 290 -- a 5-misread-as-9 digit error, not a pattern any current correction mechanism covers."
