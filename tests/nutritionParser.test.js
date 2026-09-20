@@ -285,10 +285,11 @@ describe('diet compatibility checks', () => {
     expect(result.vegetarianFriendly).toBe(true);
   });
 
-  test('checkHalalKosher flags pork/gelatin', () => {
-    const result = checkHalalKosher(['Pork Gelatin', 'Water']);
+  test('checkHalalKosher flags pork as definite, gelatin as uncertain (source-dependent)', () => {
+    const result = checkHalalKosher(['Pork', 'Gelatin', 'Water']);
     expect(result.halalKosherSafe).toBe(false);
-    expect(result.conflicts).toEqual(expect.arrayContaining(['pork', 'gelatin']));
+    expect(result.definiteConflicts).toEqual(expect.arrayContaining(['pork']));
+    expect(result.uncertainIngredients).toEqual(expect.arrayContaining(['gelatin']));
   });
 
   test('checkKetoCompatibility computes net carbs and flags high-carb keywords', () => {
