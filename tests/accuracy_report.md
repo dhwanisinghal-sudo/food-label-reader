@@ -11,33 +11,33 @@ Flagged as low OCR confidence (<60 avg): 5
 | calories | 15 | 13 | 0 | 2 | 86.7% | 0.00 |
 | total_fat_g | 15 | 10 | 0 | 5 | 66.7% | 0.00 |
 | saturated_fat_g | 15 | 10 | 1 | 4 | 66.7% | 0.00 |
-| trans_fat_g | 15 | 7 | 0 | 8 | 46.7% | 0.00 |
-| cholesterol_mg | 15 | 9 | 0 | 6 | 60.0% | 0.00 |
-| sodium_mg | 15 | 10 | 1 | 4 | 66.7% | 0.00 |
-| total_carbs_g | 15 | 9 | 0 | 6 | 60.0% | 0.00 |
-| fiber_g | 14 | 7 | 0 | 7 | 50.0% | 0.08 |
+| trans_fat_g | 14 | 7 | 0 | 7 | 50.0% | 0.00 |
+| cholesterol_mg | 15 | 9 | 1 | 5 | 60.0% | 0.00 |
+| sodium_mg | 15 | 9 | 2 | 4 | 60.0% | 0.00 |
+| total_carbs_g | 15 | 11 | 0 | 4 | 73.3% | 0.00 |
+| fiber_g | 14 | 8 | 0 | 6 | 57.1% | 0.07 |
 | total_sugars_g | 14 | 9 | 0 | 5 | 64.3% | 0.00 |
-| added_sugars_g | 8 | 2 | 0 | 6 | 25.0% | 0.00 |
-| protein_g | 14 | 9 | 0 | 5 | 64.3% | 0.00 |
+| added_sugars_g | 8 | 3 | 0 | 5 | 37.5% | 0.00 |
+| protein_g | 15 | 9 | 0 | 6 | 60.0% | 0.00 |
 
-**Overall field accuracy: 95/155 = 61.3%**
+**Overall field accuracy: 98/155 = 63.2%**
 
 ## Sample-size caveat
 
 This is a **15-photo** evaluation. Treat it as a directional smoke test, not a benchmark:
-- Overall field accuracy is 61.3%, but resampling the photos gives a 95% bootstrap interval of **44.2% - 77.6%**. Fields within one photo are correlated (a blurry photo fails on almost every field at once), so the effective sample is closer to the number of photos than to the number of fields.
+- Overall field accuracy is 63.2%, but resampling the photos gives a 95% bootstrap interval of **45.5% - 79.7%**. Fields within one photo are correlated (a blurry photo fails on almost every field at once), so the effective sample is closer to the number of photos than to the number of fields.
 - Per-field rows above rest on even fewer photos (see the Expected column); a single photo moves a row by several points.
 - The photos are a hand-picked mix of clean shots, angled shots and two-column labels, not a random sample of real-world labels.
 - Before/after comparisons use the same photos the fixes were developed against, so improvements are likely overstated for unseen photos. A held-out set of photos not used during development is the next step.
 
 ## Allergen detection
 
-True positives: 3, False positives: 0, False negatives: 1
-Precision: 100.0% | Recall: 75.0% | F1: 85.7%
+True positives: 0, False positives: 2, False negatives: 5
+Precision: 0.0% | Recall: 0.0% | F1: nan%
 
 ## Automatic OCR value corrections
 
-- Character-substitution fixes (misread O/o/I/l treated as a digit before parsing): **19** values across 15 photos
+- Character-substitution fixes (misread O/o/I/l treated as a digit before parsing): **22** values across 15 photos
 - %DV cross-check overrides (a parsed value disagreed too strongly with the label's own printed %DV and was replaced by the %DV-derived value): **6** values
 - These counts are mechanical corrections applied automatically during parsing, not manual corrections made by a person after the fact. A value that was auto-corrected can still end up WRONG relative to ground truth (see failure_cases.csv) -- these numbers measure how often the mechanism fired, not how often it fired correctly.
 
