@@ -1,0 +1,38 @@
+filename,field,type,true_value,predicted_value,ocr_confidence,manually_corrected_value,reviewer,review_date,notes
+zero_brands_strawberry_cream_bars.jpg,total_fat_g,MISSING,4.0,,40.7,4.0,Claude (visual re-check against uploaded photos),2026-09-20,
+zero_brands_strawberry_cream_bars.jpg,trans_fat_g,MISSING,0.0,,40.7,0.0,Claude (visual re-check against uploaded photos),2026-09-20,
+zero_brands_strawberry_cream_bars.jpg,cholesterol_mg,MISSING,25.0,,40.7,25.0,Claude (visual re-check against uploaded photos),2026-09-20,
+zero_brands_strawberry_cream_bars.jpg,sodium_mg,MISSING,80.0,,40.7,80.0,Claude (visual re-check against uploaded photos),2026-09-20,
+zero_brands_strawberry_cream_bars.jpg,fiber_g,MISSING,2.0,,40.7,2.0,Claude (visual re-check against uploaded photos),2026-09-20,
+zero_brands_strawberry_cream_bars.jpg,total_sugars_g,MISSING,2.0,,40.7,2.0,Claude (visual re-check against uploaded photos),2026-09-20,
+zero_brands_strawberry_cream_bars.jpg,added_sugars_g,MISSING,0.0,,40.7,0.0,Claude (visual re-check against uploaded photos),2026-09-20,
+zero_brands_strawberry_cream_bars.jpg,ALLERGENS,MISMATCH,Egg;Milk/Dairy,(none),40.7,Egg;Milk/Dairy,Claude (visual re-check against uploaded photos),2026-09-20,OCR extracted no ingredients text at all on this photo (40.7% confidence) -- allergens legible by eye on the label though
+choceur_peanuts_cornflakes_bar.jpg,total_fat_g,WRONG,9.0,0.0,51.1,9.0,Claude (visual re-check against uploaded photos),2026-09-20,"Predicted 0.0 is a genuine OCR miss, not a close-call -- label clearly reads 9g"
+choceur_peanuts_cornflakes_bar.jpg,saturated_fat_g,MISSING,4.5,,51.1,4.5,Claude (visual re-check against uploaded photos),2026-09-20,
+choceur_peanuts_cornflakes_bar.jpg,trans_fat_g,MISSING,0.0,,51.1,0.0,Claude (visual re-check against uploaded photos),2026-09-20,
+choceur_peanuts_cornflakes_bar.jpg,cholesterol_mg,MISSING,5.0,,51.1,5.0,Claude (visual re-check against uploaded photos),2026-09-20,
+choceur_peanuts_cornflakes_bar.jpg,sodium_mg,MISSING,65.0,,51.1,65.0,Claude (visual re-check against uploaded photos),2026-09-20,
+choceur_peanuts_cornflakes_bar.jpg,total_carbs_g,MISSING,18.0,,51.1,,Claude (visual re-check against uploaded photos),2026-09-20,"UNRESOLVED: this re-check reads 16g, but the ground truth row (from an earlier 4x-zoom re-read) says 18g. Print is small/low-res in this photo either way -- flagging for a second human opinion rather than picking one by eye a third time."
+choceur_peanuts_cornflakes_bar.jpg,total_sugars_g,MISSING,13.0,,51.1,13.0,Claude (visual re-check against uploaded photos),2026-09-20,
+choceur_peanuts_cornflakes_bar.jpg,added_sugars_g,MISSING,10.0,,51.1,10.0,Claude (visual re-check against uploaded photos),2026-09-20,
+choceur_peanuts_cornflakes_bar.jpg,protein_g,MISSING,3.0,,51.1,3.0,Claude (visual re-check against uploaded photos),2026-09-20,
+choceur_peanuts_cornflakes_bar.jpg,ALLERGENS,MISMATCH,Milk/Dairy;Nuts;Soy,(none),51.1,Milk/Dairy;Nuts;Soy,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,total_fat_g,MISSING,10.0,,34.9,10.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,saturated_fat_g,MISSING,4.0,,34.9,4.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,trans_fat_g,MISSING,0.0,,34.9,0.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,cholesterol_mg,MISSING,0.0,,34.9,0.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,sodium_mg,MISSING,150.0,,34.9,150.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,total_carbs_g,MISSING,42.0,,34.9,42.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,fiber_g,MISSING,5.0,,34.9,5.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,total_sugars_g,MISSING,10.0,,34.9,10.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,added_sugars_g,MISSING,10.0,,34.9,10.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,protein_g,MISSING,6.0,,34.9,6.0,Claude (visual re-check against uploaded photos),2026-09-20,
+deutsche_kuche_triple_chocolate_muesli.jpg,ALLERGENS,MISMATCH,Milk/Dairy;Nuts;Wheat/Gluten,(none),34.9,Milk/Dairy;Nuts;Wheat/Gluten,Claude (visual re-check against uploaded photos),2026-09-20,Declared Contains line is very small text in this photo -- fairly but not 100% confident
+goodnessknows_apple_almond_peanut_bar.jpg,total_fat_g,MISSING,12.0,,81.0,12.0,Claude (visual re-check against uploaded photos),2026-09-20,
+goodnessknows_apple_almond_peanut_bar.jpg,total_carbs_g,MISSING,31.0,,81.0,31.0,Claude (visual re-check against uploaded photos),2026-09-20,
+generic_chocolate_squares.jpg,cholesterol_mg,MISSING,0.0,,64.8,0.0,Claude (visual re-check against uploaded photos),2026-09-20,
+generic_chocolate_squares.jpg,protein_g,MISSING,3.0,,64.8,3.0,Claude (visual re-check against uploaded photos),2026-09-20,
+lucky_charms_cereal.jpg,total_fat_g,MISSING,1.0,,80.1,1.0,Claude (visual re-check against uploaded photos),2026-09-20,
+lucky_charms_cereal.jpg,trans_fat_g,MISSING,0.0,,80.1,0.0,Claude (visual re-check against uploaded photos),2026-09-20,
+bear_naked_sweet_honey_clusters.jpg,trans_fat_g,MISSING,0.0,,79.3,0.0,Claude (visual re-check against uploaded photos),2026-09-20,
+Annie_s_protein_nutritional.jpg,fiber_g,WRONG,3.0,39.0,77.1,3.0,Claude (visual re-check against uploaded photos),2026-09-20,Predicted 39.0 vs actual 3.0 -- classic OCR digit-concatenation error (likely fused an adjacent %DV or line-wrap digit onto the real value). Confirmed 3g by direct visual re-check.
