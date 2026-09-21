@@ -10,6 +10,7 @@ import LoginScreen from './screens/LoginScreen';
 import SignupScreen from './screens/SignupScreen';
 import ScanScreen from './screens/ScanScreen';
 import ResultsScreen from './screens/ResultsScreen';
+import MultiResultsScreen from './screens/MultiResultsScreen';
 import HistoryScreen from './screens/HistoryScreen';
 
 const AuthStack = createNativeStackNavigator();
@@ -48,6 +49,7 @@ function MainNavigator() {
     <MainStack.Navigator>
       <MainStack.Screen name="Tabs" component={Tabs} options={{ headerShown: false }} />
       <MainStack.Screen name="Results" component={ResultsScreen} options={{ title: 'Analysis Results' }} />
+      <MainStack.Screen name="MultiResults" component={MultiResultsScreen} options={{ title: 'Batch Results' }} />
     </MainStack.Navigator>
   );
 }
