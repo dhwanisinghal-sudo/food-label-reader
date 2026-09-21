@@ -700,6 +700,114 @@ def _repair_truncated_calories(text):
     return _TRUNCATED_CALORIES_RE.sub(r'\1Calories', text)
 
 
+# ---------------------------------------------------------------------------
+# 4b. Positional fallback for keyword-level OCR corruption
+# ---------------------------------------------------------------------------
+# REAL, DIFFERENT TECHNIQUE from fuzzy keyword-correction (see
+# fuzzy_correct_keywords above): some real OCR misreads corrupt a nutrient
+# keyword too badly for ANY safe text-similarity threshold to recover
+# ("Saturated" -> "Sanented" is only 59% similar; "Cholesterol" -> "Cuenta"
+# is only 35% similar -- lowering the threshold to catch these would start
+# misfiring on unrelated garbage elsewhere). This does NOT try to read the
+# keyword at all. Instead it exploits a completely different, independent
+# fact: the FDA mandates a FIXED, legally standardized ORDER for nutrients
+# on a Nutrition Facts label (Total Fat, Saturated Fat, Trans Fat,
+# Cholesterol, Sodium, Total Carbohydrate, Dietary Fiber, Total Sugars,
+# Added Sugars, Protein -- 21 CFR 101.9). If two fields on either side of a
+# gap were found normally (by keyword), and the number of unclaimed
+# "value-shaped" lines in between exactly matches the number of missing
+# fields expected there in the mandated order, each can be assigned
+# WITHOUT ever reading its (possibly unreadable) keyword.
+#
+# Deliberately conservative: only assigns when the count matches exactly
+# and the unit (g vs mg) is consistent with what that position expects. If
+# the count doesn't match, it leaves the field missing rather than guess --
+# missing-but-honest beats a wrong number for a system flagging health risks.
+
+_FDA_FIELD_ORDER = [
+    ('total_fat_g', 'g'), ('saturated_fat_g', 'g'), ('trans_fat_g', 'g'),
+    ('cholesterol_mg', 'mg'), ('sodium_mg', 'mg'), ('total_carbs_g', 'g'),
+    ('fiber_g', 'g'), ('total_sugars_g', 'g'), ('added_sugars_g', 'g'),
+    ('protein_g', 'g'),
+]
+
+_GENERIC_VALUE_RE = re.compile(r'(\d{1,4}\.?\d*)\s*(mg|g)\b', re.IGNORECASE)
+
+
+def _line_index_of(text, char_offset):
+    return text.count('\n', 0, char_offset)
+
+
+def _positional_fallback(text, data):
+    known_line_of_field = {}
+    for key, pattern in NUTRITION_PATTERNS.items():
+        if key not in data:
+            continue
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            known_line_of_field[key] = _line_index_of(text, match.start())
+
+    lines = text.split('\n')
+    claimed_lines = set(known_line_of_field.values())
+    candidate_lines = {}  # line_idx -> (value, unit)
+    for idx, line in enumerate(lines):
+        if idx in claimed_lines:
+            continue
+        m = _GENERIC_VALUE_RE.search(line)
+        if m:
+            candidate_lines[idx] = (m.group(1), m.group(2).lower())
+
+    order_keys = [k for k, _ in _FDA_FIELD_ORDER]
+    for i, (key, expected_unit) in enumerate(_FDA_FIELD_ORDER):
+        if key in data:
+            continue
+        # Find the nearest already-known anchor before and after this
+        # field's position in the mandated order.
+        prev_line = None
+        for j in range(i - 1, -1, -1):
+            if order_keys[j] in known_line_of_field:
+                prev_line = known_line_of_field[order_keys[j]]
+                break
+        next_line = None
+        for j in range(i + 1, len(order_keys)):
+            if order_keys[j] in known_line_of_field:
+                next_line = known_line_of_field[order_keys[j]]
+                break
+        if prev_line is None or next_line is None or next_line <= prev_line + 1:
+            continue
+
+        # All fields strictly between this position and the next known
+        # anchor, in mandated order, that are still missing.
+        start_idx = order_keys.index(key)
+        gap_fields = []
+        for j in range(start_idx, len(order_keys)):
+            k2 = order_keys[j]
+            if k2 in known_line_of_field:
+                break
+            if k2 not in data:
+                gap_fields.append(k2)
+
+        gap_candidate_lines = sorted(ln for ln in candidate_lines if prev_line < ln < next_line)
+        if len(gap_candidate_lines) != len(gap_fields):
+            continue  # ambiguous -- don't guess
+
+        for field_key, line_idx in zip(gap_fields, gap_candidate_lines):
+            expected = dict(_FDA_FIELD_ORDER)[field_key]
+            raw_value, unit = candidate_lines[line_idx]
+            if unit != expected:
+                continue  # unit mismatch -- safety check failed, skip this one
+            value = _clean_num(raw_value, field=field_key)
+            if value is None:
+                continue
+            lo, hi = _PLAUSIBLE_RANGE.get(field_key, (0, float('inf')))
+            if not (lo <= value <= hi):
+                continue
+            data[field_key] = value
+            claimed_lines.add(line_idx)
+
+    return data
+
+
 def parse_nutrition(text):
     data = {}
     text = _repair_truncated_calories(text)
@@ -765,6 +873,10 @@ def parse_nutrition(text):
     if parsed_serving is not None:
         data['serving_size'] = parsed_serving['raw']
         data['serving_size_parsed'] = parsed_serving
+
+    # Positional fallback for keywords too corrupted for fuzzy-correction
+    # to safely fix -- see _positional_fallback's docstring above.
+    data = _positional_fallback(text, data)
     return data
 
 
