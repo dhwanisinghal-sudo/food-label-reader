@@ -35,10 +35,12 @@ const AGE_GROUPS = [
 
 export default function ScanScreen({ navigation }) {
   const [imageUri, setImageUri] = useState(null);
+  const [multiImageUris, setMultiImageUris] = useState([]); // set only via "Multiple Photos" picker below
   const [ingredientsUri, setIngredientsUri] = useState(null);
   const [selectedConditions, setSelectedConditions] = useState([]);
   const [ageGroup, setAgeGroup] = useState('adults_children_4plus');
   const [busy, setBusy] = useState(false);
+  const [busyProgress, setBusyProgress] = useState(null); // "{n} of {total}" while a multi-photo scan runs
 
   const toggleCondition = (id) => {
     setSelectedConditions((prev) => (
@@ -60,10 +62,40 @@ export default function ScanScreen({ navigation }) {
 
     if (!result.canceled && result.assets?.length) {
       setter(result.assets[0].uri);
+      // A single-photo pick always replaces any previous multi-photo
+      // selection, so the two modes (single vs. batch) can't get mixed
+      // together in one "Analyze" press.
+      setMultiImageUris([]);
+    }
+  };
+
+  // Multi-image upload (mirrors the web app's "select several labels at
+  // once, get individual reports" feature — see index.html's scanBtn
+  // handler for the matching sequential-not-parallel reasoning). Camera
+  // capture is inherently one-photo-at-a-time, so this only applies to the
+  // gallery picker.
+  const pickMultipleImages = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission needed', 'Please allow access to continue.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      quality: 0.8,
+      allowsMultipleSelection: true,
+    });
+    if (!result.canceled && result.assets?.length) {
+      setMultiImageUris(result.assets.map((a) => a.uri));
+      // A multi-photo selection replaces any single-photo pick, for the
+      // same reason as above.
+      setImageUri(null);
     }
   };
 
   const handleAnalyze = async () => {
+    if (multiImageUris.length > 0) {
+      return handleAnalyzeMulti();
+    }
     if (!imageUri) {
       Alert.alert('No photo', 'Please take or choose a photo of the nutrition label first.');
       return;
@@ -81,17 +113,54 @@ export default function ScanScreen({ navigation }) {
     }
   };
 
+  // Runs one photo at a time, sequentially, not in parallel -- the same
+  // choice the web app makes for its multi-image flow: the free-tier
+  // backend has limited memory, and firing several OCR/LLM requests at
+  // once against a cold Render instance is far more likely to time out or
+  // OOM than to actually finish faster. A failure on one photo is caught
+  // per-photo so it doesn't abort the rest of the batch.
+  const handleAnalyzeMulti = async () => {
+    setBusy(true);
+    const items = [];
+    for (let i = 0; i < multiImageUris.length; i++) {
+      setBusyProgress(`${i + 1} of ${multiImageUris.length}`);
+      const uri = multiImageUris[i];
+      try {
+        const data = await analyzeLabel(uri, selectedConditions, null, ageGroup);
+        items.push({ uri, result: data, error: null });
+      } catch (err) {
+        const msg = err?.response?.data?.error || 'Analysis failed for this photo.';
+        items.push({ uri, result: null, error: msg });
+      }
+    }
+    setBusy(false);
+    setBusyProgress(null);
+    navigation.navigate('MultiResults', { items });
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.heading}>Scan a Food Label</Text>
 
       <View style={styles.photoBox}>
-        {imageUri ? (
+        {multiImageUris.length > 0 ? (
+          <ScrollView horizontal contentContainerStyle={styles.multiPreviewRow}>
+            {multiImageUris.map((uri) => (
+              <Image key={uri} source={{ uri }} style={styles.multiThumb} />
+            ))}
+          </ScrollView>
+        ) : imageUri ? (
           <Image source={{ uri: imageUri }} style={styles.photoPreview} />
         ) : (
           <Text style={styles.photoPlaceholder}>No photo selected</Text>
         )}
       </View>
+      {multiImageUris.length > 0 && (
+        <Text style={styles.helpText}>
+          {multiImageUris.length} photos selected — each will get its own report.{' '}
+          <Text style={styles.linkText} onPress={() => setMultiImageUris([])}>Clear</Text>
+        </Text>
+      )}
 
       <View style={styles.row}>
         <TouchableOpacity style={styles.secondaryButton} onPress={() => pickImage(setImageUri, true)}>
@@ -101,6 +170,9 @@ export default function ScanScreen({ navigation }) {
           <Text style={styles.secondaryButtonText}>🖼 Gallery</Text>
         </TouchableOpacity>
       </View>
+      <TouchableOpacity style={styles.multiSelectButton} onPress={pickMultipleImages}>
+        <Text style={styles.multiSelectButtonText}>🖼📚 Select Multiple Photos (one report each)</Text>
+      </TouchableOpacity>
 
       <Text style={styles.sectionLabel}>Ingredients photo (optional)</Text>
       <Text style={styles.helpText}>
@@ -154,11 +226,17 @@ export default function ScanScreen({ navigation }) {
       <TouchableOpacity style={styles.primaryButton} onPress={handleAnalyze} disabled={busy}>
         {busy
           ? <ActivityIndicator color="#fff" />
-          : <Text style={styles.primaryButtonText}>Analyze Label</Text>}
+          : (
+            <Text style={styles.primaryButtonText}>
+              {multiImageUris.length > 0 ? `Analyze ${multiImageUris.length} Labels` : 'Analyze Label'}
+            </Text>
+          )}
       </TouchableOpacity>
       {busy && (
         <Text style={styles.helpText}>
-          Running OCR + health analysis — this can take up to a minute if the server was asleep.
+          {busyProgress
+            ? `Analyzing photo ${busyProgress} — this can take a while per photo if the server was asleep.`
+            : 'Running OCR + health analysis — this can take up to a minute if the server was asleep.'}
         </Text>
       )}
     </ScrollView>
@@ -192,4 +270,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#2e7d32', borderRadius: 10, padding: 16, alignItems: 'center',
   },
   primaryButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  multiPreviewRow: { flexDirection: 'row', gap: 8, padding: 8 },
+  multiThumb: { width: 90, height: 90, borderRadius: 8, backgroundColor: '#eee' },
+  multiSelectButton: {
+    borderWidth: 1, borderColor: '#2e7d32', borderStyle: 'dashed', borderRadius: 10,
+    padding: 12, alignItems: 'center', marginBottom: 16,
+  },
+  multiSelectButtonText: { color: '#2e7d32', fontWeight: '600', fontSize: 13 },
+  linkText: { color: '#2e7d32', fontWeight: '600', textDecorationLine: 'underline' },
 });
