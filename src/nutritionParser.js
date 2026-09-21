@@ -1,1423 +1,596 @@
-"""
-nutrition_parser.py
-
-This module is the SAME logic that lives in food_label_reader_final.ipynb,
-pulled out into an importable .py file. It exists so that:
-  1. tests/Test_nutrition_parser.py can actually import something
-     (previously it did `from app import ...` and `app.py` did not exist
-     anywhere in the repo -> the whole test file failed to collect).
-  2. evaluate_accuracy.py can run the real parsing/scoring pipeline against
-     a ground-truth CSV without needing to re-run the whole notebook.
-
-If you change a function in the notebook, copy the change here too (or,
-better, make the notebook import from this file instead of duplicating
-the code -- see "Suggested next step" at the bottom of this file).
-"""
-
-import re
-import cv2
-import numpy as np
-import pytesseract
-from PIL import Image
-
-
-# ---------------------------------------------------------------------------
-# 2. Image quality check & preprocessing
-# ---------------------------------------------------------------------------
-
-def check_image_quality(image_path):
-    """Flags blurry, too-dark, or overexposed photos before we waste time on OCR."""
-    img = cv2.imread(image_path)
-    if img is None:
-        return {'ok': False, 'issues': ['Could not read image'], 'blur_score': 0, 'brightness': 0}
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-    brightness = gray.mean()
-
-    issues = []
-    if blur_score < 100:
-        issues.append(f'Image looks blurry (sharpness: {blur_score:.1f}, want > 100)')
-    if brightness < 60:
-        issues.append(f'Image looks too dark (brightness: {brightness:.1f}/255)')
-    elif brightness > 220:
-        issues.append(f'Image looks overexposed/glare (brightness: {brightness:.1f}/255)')
-
-    return {
-        'ok': len(issues) == 0,
-        'issues': issues,
-        'blur_score': round(float(blur_score), 1),
-        'brightness': round(float(brightness), 1),
-    }
-
-
-def deskew_image(image_path, output_path="deskewed.jpg"):
-    """Straightens a rotated/angled photo of the label to improve OCR accuracy."""
-    img = cv2.imread(image_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.bitwise_not(gray)
-    thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-
-    coords = np.column_stack(np.where(thresh > 0))
-    if len(coords) == 0:
-        return image_path
-
-    angle = cv2.minAreaRect(coords)[-1]
-    angle = -(90 + angle) if angle < -45 else -angle
-
-    (h, w) = img.shape[:2]
-    center = (w // 2, h // 2)
-    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    cv2.imwrite(output_path, rotated)
-    return output_path
-
-
-def preprocess_image(image_path, output_path="preprocessed.jpg"):
-    """Grayscale + adaptive contrast + binary threshold.
-    NOTE: as of the current notebook, this function is DEFINED but never
-    CALLED from main() -- deskew_image() runs, this does not. Flagging that
-    here so it isn't silently forgotten when you wire it back in."""
-    img = cv2.imread(image_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    contrast = clahe.apply(gray)
-    _, thresh = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    cv2.imwrite(output_path, thresh)
-    return output_path
-
-
-# ---------------------------------------------------------------------------
-# 3. OCR
-# ---------------------------------------------------------------------------
-
-def ensure_min_resolution(image_path, output_path="_resized.jpg", target_long_edge=2000):
-    """Upscales small photos before OCR.
-
-    REAL BUG FOUND during accuracy testing on actual uploaded photos: a
-    314x235px photo (perfectly readable to a human) returned a completely
-    EMPTY string from Tesseract -- not a misread, total extraction failure.
-    Upscaling the same image 3x immediately produced real text. The
-    server-side JS pipeline (src/server.js, via `sharp`) already resizes
-    every upload to a 2000px long edge before OCR -- this notebook/Python
-    path never had that step, which is a large chunk of why the notebook's
-    measured OCR accuracy was so much worse than expected on real photos.
-    """
-    img = cv2.imread(image_path)
-    if img is None:
-        return image_path
-    h, w = img.shape[:2]
-    long_edge = max(h, w)
-    if long_edge >= target_long_edge:
-        return image_path
-    scale = target_long_edge / long_edge
-    resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    cv2.imwrite(output_path, resized)
-    return output_path
-
-
-def _to_int_conf(c):
-    """Tesseract confidences arrive as int, float or numeric string depending on
-    the pytesseract version; -1 means "no confidence for this box". Returns an
-    int, or None if the value can't be read at all."""
-    try:
-        return int(float(c))
-    except (ValueError, TypeError):
-        return None
-
-
-def extract_text_with_confidence(image_path, langs="eng+hin", psm=3):
-    """Runs OCR with a given Tesseract page-segmentation mode and also
-    reports how confident Tesseract is."""
-    image_path = ensure_min_resolution(image_path, output_path=image_path + "._resized.jpg")
-    img = Image.open(image_path)
-    config = f"--psm {psm}"
-    try:
-        data = pytesseract.image_to_data(img, lang=langs, config=config, output_type=pytesseract.Output.DICT)
-        text = pytesseract.image_to_string(img, lang=langs, config=config)
-    except pytesseract.TesseractError:
-        data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
-        text = pytesseract.image_to_string(img, config=config)
-
-    # FIX (robustness review, rotated-image case): only boxes where Tesseract
-    # actually detected NON-BLANK text are counted. Tesseract also emits
-    # layout boxes (blocks, paragraphs, lines) with a high conf value and an
-    # EMPTY text string. Averaging those in let a 15-degree-rotated photo where
-    # OCR extracted nothing at all still report ~95% confidence and
-    # reliable=True -- a confidently-wrong result, worse than an honestly low
-    # one because nothing downstream flags it for review.
-    confidences = [
-        conf for i, c in enumerate(data['conf'])
-        if (conf := _to_int_conf(c)) is not None and conf >= 0 and (data['text'][i] or '').strip()
-    ]
-    avg_confidence = round(sum(confidences) / len(confidences), 1) if confidences else 0
-    low_conf_words = [
-        data['text'][i] for i, c in enumerate(data['conf'])
-        if (conf := _to_int_conf(c)) is not None and 0 <= conf < 50 and (data['text'][i] or '').strip()
-    ]
-
-    return {
-        'text': text,
-        'avg_confidence': avg_confidence,
-        # No text at all can never be "reliable", whatever the average says.
-        'reliable': avg_confidence >= 60 and bool(text.strip()),
-        'low_confidence_words': low_conf_words,
-    }
-
-
-# A real nutrition panel yields many fields (calories, fat, sodium, carbs, protein, ...).
-# Fewer than this many parsed nutrient fields means extraction largely failed.
-MIN_FIELDS_FOR_RELIABLE = 3
-
-
-def _choose_serving_column(columns, col_parses):
-    """Picks which of two detected columns to treat as the per-serving column.
-
-    Preferred: the one column whose OWN header says "per serving" and NOT
-    "per container" -- that is an explicit signal instead of a guess.
-    Fallback (previous behavior): the column that parsed the most fields; on a
-    tie max() returns the left column, which is per-serving on US labels but
-    that is an assumption, not a detection. Returns (index, 'header' | 'most_fields').
-    """
-    serving_only = []
-    for i, col_text in enumerate(columns):
-        t = col_text.lower()
-        says_serving = bool(re.search(r'per\s*serving', t))
-        says_container = bool(re.search(r'per\s*(?:container|package|pack)\b', t))
-        if says_serving and not says_container:
-            serving_only.append(i)
-    if len(serving_only) == 1 and col_parses[serving_only[0]]:
-        return serving_only[0], 'header'
-    return max(range(len(col_parses)), key=lambda i: len(col_parses[i])), 'most_fields'
-
-
-def extract_text_best_effort(image_path, langs="eng+hin"):
-    """Runs OCR TWICE with two different page-segmentation modes and merges
-    the results, because testing on real photos showed neither mode wins on
-    every layout:
-
-      - psm 3 (auto layout analysis, Tesseract's default): correctly keeps
-        a two-column layout (e.g. Nutrition Facts on the left, Ingredients
-        + address text on the right) as two separate columns. But on a
-        busy/angled photo (box held at an angle, wood table in the
-        background) it sometimes stops after the first 2-3 lines entirely.
-      - psm 6 (treat the whole image as one block of text): recovered the
-        rest of the label on that busy/angled photo (72 chars -> 380
-        chars). But on a genuine two-column label, it reads across both
-        columns line-by-line and interleaves them into garbage -- which
-        silently broke ingredient/allergen extraction on an image where
-        psm 3 alone had worked fine.
-
-    So: run both, parse both, and merge -- numeric nutrition fields prefer
-    the psm 3 result (it's the safer default and rarely hallucinates a
-    wrong number), falling back to psm 6 only for fields psm 3 missed
-    entirely. For ingredients, keep whichever pass produced the LONGER
-    parsed ingredient list, since a short/empty list is the signature of
-    column interleaving. This is a workaround, not a real fix -- see
-    `nutrition_parser.py` module docstring / accuracy report for the
-    honest limitation this papers over.
-    """
-    ocr_a = extract_text_with_confidence(image_path, langs, psm=3)
-    ocr_b = extract_text_with_confidence(image_path, langs, psm=6)
-
-    # Fuzzy-correct likely OCR keyword misreads (e.g. "Sanented" ->
-    # "saturated", "Sodum" -> "sodium") before parsing -- see the
-    # fuzzy_correct_keywords docstring for what this can and cannot fix.
-    parsed_a = parse_nutrition(fuzzy_correct_keywords(ocr_a['text']))
-    parsed_b = parse_nutrition(fuzzy_correct_keywords(ocr_b['text']))
-    merged_nutrition = {**parsed_b, **parsed_a}  # psm3 wins on conflicts, fills gaps from psm6
-
-    ing_a = parse_ingredients(ocr_a['text'])
-    ing_b = parse_ingredients(ocr_b['text'])
-    best_ingredients = ing_a if len(ing_a) >= len(ing_b) else ing_b
-    best_ocr_text = ocr_a['text'] if len(ing_a) >= len(ing_b) else ocr_b['text']
-
-    result = {
-        'text': best_ocr_text,
-        'nutrition': merged_nutrition,
-        'ingredients': best_ingredients,
-        'avg_confidence': max(ocr_a['avg_confidence'], ocr_b['avg_confidence']),
-        'reliable': ocr_a['reliable'] or ocr_b['reliable'],
-        'psm3_text': ocr_a['text'],
-        'psm6_text': ocr_b['text'],
-        'columns_detected': False,
-    }
-
-    # Two-column layout fix: if a genuine two-column split is found AND
-    # parsing one column alone recovers MORE nutrition fields than the
-    # merged whole-image parse above, use that column instead. This
-    # specifically targets the dual-column ("Per Serving | Per Container")
-    # labels that used to fail almost entirely -- see accuracy_report.md.
-    try:
-        columns = extract_columns_if_present(image_path, langs)
-    except Exception:
-        columns = None
-
-    if columns:
-        col_parses = [parse_nutrition(col_text) for col_text in columns]
-        best_col_idx, how = _choose_serving_column(columns, col_parses)
-        if len(col_parses[best_col_idx]) > len(merged_nutrition):
-            result['nutrition'] = col_parses[best_col_idx]
-            result['text'] = columns[best_col_idx]
-            result['columns_detected'] = True
-            result['column_texts'] = columns
-            result['column_choice'] = how  # 'header' (per-serving label seen) or 'most_fields' (fallback guess)
-
-    # FIX (robustness review, rotated-image case): "reliable" used to mean only
-    # "Tesseract was confident about whatever text it found". A photo where the
-    # text was found but NO nutrition fields could be parsed from it therefore
-    # still came back reliable=True. Require a minimum number of real parsed
-    # nutrient fields before calling a result reliable.
-    fields_found = sum(1 for k in result['nutrition'] if k in NUTRITION_PATTERNS)
-    result['fields_found'] = fields_found
-    warnings = []
-    if fields_found < MIN_FIELDS_FOR_RELIABLE:
-        warnings.append(
-            f"Only {fields_found} nutrition field(s) could be parsed "
-            f"(need >= {MIN_FIELDS_FOR_RELIABLE}) -- result is not reliable even if OCR confidence looks high."
-        )
-        result['reliable'] = False
-    elif not result['reliable']:
-        warnings.append("Low OCR confidence -- parsed values should be checked against the label.")
-    result['warnings'] = warnings
-
-    return result
-
-
-
-# ---------------------------------------------------------------------------
-# 3b. Two-column label handling ("Per Serving | Per Container" side by side)
-# ---------------------------------------------------------------------------
-# REAL, PREVIOUSLY-UNRESOLVED LIMITATION: dual-column labels (two of the 15
-# test images -- jenis_ice_cream_double_dough, savoritz_parmesan_crisps --
-# use this layout) were failing on almost every field, because psm 6 (the
-# fallback above for busy/angled photos) reads across both columns
-# line-by-line and interleaves them into garbage. psm 3 alone sometimes
-# keeps the columns separate in its raw text ordering, but parse_nutrition
-# has no concept of "column" -- it just regex-searches the whole string, so
-# a value that happens to land next to the wrong column's number can still
-# get matched incorrectly.
-#
-# This adds a real fix: use Tesseract's word-level bounding boxes
-# (pytesseract.image_to_data, already used by extract_text_with_confidence)
-# to detect a genuine vertical gap splitting the words into two groups, and
-# reconstruct each column as its own line-ordered text block. Each column is
-# then parsed SEPARATELY, so a "Per Serving" number is never regex-matched
-# alongside a "Per Container" number from the other column.
-
-def _reconstruct_columns_from_words(data, image_width, min_gap_fraction=0.12):
-    """Groups pytesseract image_to_data words into two columns.
-
-    REAL FIX (found by measuring an actual clean, high-confidence
-    dual-column photo -- lucky_charms_cereal.jpg): the original version of
-    this function looked for the single biggest gap among ALL word
-    centers, but on a real, professionally-typeset label the two value
-    columns are printed close together (measured ~120px apart on that
-    photo, a small fraction of the image width) while the single BIGGEST
-    gap in the whole image is almost always somewhere irrelevant --
-    margins, a graphic, decorative whitespace -- not the true column
-    boundary. That made the old global-gap approach structurally unable
-    to find genuine, tightly-spaced real-world dual-value columns.
-
-    This version instead looks specifically at tokens that LOOK LIKE
-    nutrition values (start with a digit, optionally followed by g/mg/%)
-    and finds the gap among just THOSE tokens' x-positions -- on the same
-    real photo, this correctly separates two tight, consistent clusters at
-    x~1406-1427 and x~1509-1545 across many rows, confirmed by checking
-    the same column recurs on Calories, Calories from Fat, Saturated Fat,
-    Cholesterol, Potassium and Dietary Fiber rows independently. Falls
-    back to the full-word-gap approach afterward, so a chance case where
-    that STILL works (as on the synthetic test image originally built for
-    this) isn't lost.
-    """
-    words = []
-    n = len(data.get('text', []))
-    for i in range(n):
-        text = (data['text'][i] or '').strip()
-        try:
-            conf = int(data['conf'][i])
-        except (ValueError, TypeError, KeyError):
-            conf = -1
-        if not text or conf < 0:
-            continue
-        words.append({
-            'text': text,
-            'left': data['left'][i],
-            'top': data['top'][i],
-            'width': data['width'][i],
-            'height': data['height'][i],
-        })
-
-    if len(words) < 6:
-        return [None]  # too little text to make a meaningful column call
-
-    value_like = re.compile(r'^[0-9][0-9.]*\s*(g|mg|%)?$', re.IGNORECASE)
-    value_words = [w for w in words if value_like.match(w['text'])]
-
-    split_x = None
-    if len(value_words) >= 6:
-        value_centers = sorted(w['left'] + w['width'] / 2 for w in value_words)
-        value_gaps = [(value_centers[i + 1] - value_centers[i], value_centers[i], value_centers[i + 1])
-                      for i in range(len(value_centers) - 1)]
-        biggest_value_gap, vgap_start, vgap_end = max(value_gaps, key=lambda g: g[0])
-        # A real dual-value column boundary recurs across many rows, so it
-        # should be comfortably bigger than ordinary digit/unit spacing
-        # within one number (a few px) but doesn't need to be a large
-        # fraction of the image width -- unlike the whole-word check below,
-        # which does, because whole-word gaps include much wider natural
-        # gaps (indentation, label-to-value spacing) that a raw threshold
-        # must rule out.
-        if biggest_value_gap > 25:
-            left_count = sum(1 for c in value_centers if c < (vgap_start + vgap_end) / 2)
-            right_count = len(value_centers) - left_count
-            if left_count >= 3 and right_count >= 3:
-                split_x = (vgap_start + vgap_end) / 2
-
-    if split_x is None:
-        centers = sorted(w['left'] + w['width'] / 2 for w in words)
-        gaps = [(centers[i + 1] - centers[i], centers[i], centers[i + 1]) for i in range(len(centers) - 1)]
-        biggest_gap, gap_start, gap_end = max(gaps, key=lambda g: g[0])
-        if biggest_gap < image_width * min_gap_fraction:
-            return [None]  # no gap wide enough to be a real column boundary, not just word spacing
-        split_x = (gap_start + gap_end) / 2
-
-    left_words = [w for w in words if (w['left'] + w['width'] / 2) < split_x]
-    right_words = [w for w in words if (w['left'] + w['width'] / 2) >= split_x]
-
-    # Require BOTH sides to have a real amount of text -- otherwise this is
-    # more likely a logo/watermark/page-number sitting apart from one main
-    # block of text, not a genuine two-column nutrition panel.
-    if len(left_words) < 4 or len(right_words) < 4:
-        return [None]
-
-    def words_to_text(word_list):
-        word_list = sorted(word_list, key=lambda w: w['top'])
-        rows = []
-        for w in word_list:
-            placed = False
-            for row in rows:
-                if abs(row[0]['top'] - w['top']) < max(row[0]['height'], w['height']) * 0.6:
-                    row.append(w)
-                    placed = True
-                    break
-            if not placed:
-                rows.append([w])
-        rows.sort(key=lambda row: sum(w['top'] for w in row) / len(row))
-        lines = []
-        for row in rows:
-            row.sort(key=lambda w: w['left'])
-            lines.append(' '.join(w['text'] for w in row))
-        return '\n'.join(lines)
-
-    return [words_to_text(left_words), words_to_text(right_words)]
-
-
-def extract_columns_if_present(image_path, langs="eng+hin"):
-    """Returns [left_column_text, right_column_text] if a confident
-    two-column layout is detected, else None (caller should fall back to
-    extract_text_best_effort's single/merged text)."""
-    resized_path = ensure_min_resolution(image_path, output_path=image_path + "._resized_cols.jpg")
-    img = Image.open(resized_path)
-    config = "--psm 3"
-    try:
-        data = pytesseract.image_to_data(img, lang=langs, config=config, output_type=pytesseract.Output.DICT)
-    except pytesseract.TesseractError:
-        data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
-
-    columns = _reconstruct_columns_from_words(data, img.width)
-    if len(columns) < 2 or columns[0] is None:
-        return None
-    return columns
-
-
-
-# ---------------------------------------------------------------------------
-# 3c. Fuzzy keyword correction for badly-OCR'd nutrient labels
-# ---------------------------------------------------------------------------
-# REAL FINDING from debugging the two-column test photos: the label
-# parsing failures on savoritz_parmesan_crisps were NOT primarily a
-# column-layout problem -- they were caused by OCR misreading the nutrient
-# NAME keywords themselves on a low-quality/blurry photo (e.g. "Saturated"
-# read as "Sanented", "Sodium" read as "Sodum", "Dietary" read as
-# "Chetary"). The regex patterns require literal keyword text, so any of
-# these misreads causes that field to be silently skipped entirely.
-#
-# This is corrected ONLY for misreads close enough (>=68% character
-# similarity, and only for tokens with at least 5 letters) to a known
-# nutrient keyword to be corrected safely. Some real-world OCR misreads on
-# this photo were checked and found to be genuinely too corrupted to fix
-# this way without risking false-positive corrections elsewhere --
-# "Sanented" -> "saturated" is only 59% similar, and "Cuenta" ->
-# "cholesterol" is only 35% similar. Those remain a real, honestly-stated
-# limitation: no safe text-level fix exists for OCR output that corrupted;
-# only better image quality/OCR would recover them.
-import difflib as _difflib
-
-_KEYWORD_VOCAB = [
-    'calories', 'total', 'saturated', 'trans', 'cholesterol', 'sodium',
-    'carbohydrate', 'dietary', 'sugars', 'added', 'protein', 'serving',
-    'servings', 'container', 'amount', 'value', 'daily',
-]
-
-
-def fuzzy_correct_keywords(text, min_token_len=5, cutoff=0.68):
-    """Replaces OCR-misread nutrient keyword tokens with their likely
-    correct spelling, ONLY when the match is close enough to be safe.
-    Deliberately conservative -- see the module-level note above for why
-    some real misreads are left uncorrected rather than guessed at."""
-    def fix_token(tok):
-        core = ''.join(ch for ch in tok if ch.isalpha())
-        if len(core) < min_token_len:
-            return tok
-        matches = _difflib.get_close_matches(core.lower(), _KEYWORD_VOCAB, n=1, cutoff=cutoff)
-        if matches and matches[0] != core.lower():
-            return tok.replace(core, matches[0])
-        return tok
-    return ' '.join(fix_token(t) for t in text.split(' '))
-
-
-# ---------------------------------------------------------------------------
-# 4. Parsing
-# ---------------------------------------------------------------------------
-
-_NUM = r'([0-9OoIl]+\.?[0-9]*)'
-
-
-# Tracks every automatic correction this module makes to a raw OCR value,
-# so evaluate_accuracy.py can report *how many* values were actually fixed
-# by these mechanisms instead of just describing them qualitatively.
-# Two distinct kinds are logged separately because they're different things:
-#   'char_substitution' -- a letter (O/o/I/l) that OCR misread in place of a
-#       digit, fixed by _clean_num() before the string is even a number.
-#   'dv_crosscheck'     -- a value that parsed as a plausible number but was
-#       then overwritten because it disagreed too strongly with the label's
-#       own printed %DV for that nutrient (see parse_nutrition()).
-_correction_log = []
-
-
-def reset_correction_log():
-    _correction_log.clear()
-
-
-def get_correction_log():
-    return list(_correction_log)
-
-
-def _clean_num(raw, field=None):
-    """Converts an OCR'd number string (which may contain misread letters) to a float."""
-    fixed = raw.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
-    if fixed != raw:
-        _correction_log.append({
-            'type': 'char_substitution', 'field': field, 'raw': raw, 'fixed': fixed,
-        })
-    try:
-        return float(fixed)
-    except ValueError:
-        return None
-
-
-# G_UNIT/MG_UNIT widened per src/nutritionParser.js's verified findings: real
-# Tesseract output on real photos fuses the "g"/"mg" unit glyph into the
-# number as a trailing 9 or 3 far more often than the original notebook
-# patterns tolerated (e.g. "1.5g" -> "1.59", "2g" -> "29"), which silently
-# failed to match at all under the old [g)] / [g3] classes.
-_G_UNIT = r'[g)93]'
-_MG_UNIT = r'm[ga9]'
-
-NUTRITION_PATTERNS = {
-    # Tolerates a dual-column header between the word and the number, in either
-    # order ("Calories Per Serving Per Container\n330 980" or the reverse).
-    'calories': r'calories\s*(?:per\s*(?:serving|container|package|pack)\s*){0,2}[:\s]*' + _NUM,
-    'total_fat_g': r'total fat\s*' + _NUM + r'\s*' + _G_UNIT,
-    'saturated_fat_g': r'saturated fat\s*' + _NUM + r'\s*' + _G_UNIT,
-    'trans_fat_g': r'trans fat\s*' + _NUM + r'\s*' + _G_UNIT,
-    'cholesterol_mg': r'cholesterol\s*' + _NUM + r'\s*' + _MG_UNIT,
-    'sodium_mg': r'sodium\s*' + _NUM + r'\s*' + _MG_UNIT,
-    'total_carbs_g': r'total carboh[yi]d[nr]ate\s*' + _NUM + r'\s*' + _G_UNIT,
-    'fiber_g': r'(?:dietary\s*)?fiber\s*(?:less than\s*)?' + _NUM + r'\s*' + _G_UNIT + '?',
-    'total_sugars_g': r'(?:total\s+)?sugars\s*' + _NUM + r'\s*' + _G_UNIT,
-    'added_sugars_g': r'includes\s*' + _NUM + r'\s*' + _G_UNIT + r'\s*added sugars',
-    'protein_g': r'protein\s*' + _NUM + r'\s*' + _G_UNIT,
+/**
+ * nutritionParser.js
+ * Ported from the Python notebook logic — same OCR-misread fixes:
+ *  - digit/letter confusion (0<->O, l<->1)
+ *  - unit char fused into the number (e.g. "8g" OCR'd as "89", "2g" as "29")
+ *  - %DV cross-check to self-correct garbled amounts
+ *
+ * Verified against real Tesseract output (not just assumed OCR noise): ran
+ * the actual server preprocessing pipeline (sharp resize->2000px, jpeg q88)
+ * + `tesseract --psm 3 --oem 1` against a real nutrition label photo. Real
+ * output included lines like "Total Fat 89 12%", "Total Carbohydrate 189",
+ * "Protein 29" — Tesseract is fusing the "g" unit glyph into the number as
+ * a trailing "9" far more often than it was previously given credit for.
+ * The old unit classes ([g)], [g3]) had no tolerance for that at all, so
+ * those fields silently failed to match and showed as "Not detected".
+ */
+
+const DAILY_VALUES = {
+  calories: 2000, total_fat_g: 78, saturated_fat_g: 20,
+  cholesterol_mg: 300, sodium_mg: 2300, total_carbs_g: 275,
+  fiber_g: 28, total_sugars_g: 50, added_sugars_g: 50, protein_g: 50,
+  // FDA 2020 label reference values for the micronutrients added below.
+  vitamin_d_mcg: 20, calcium_mg: 1300, iron_mg: 18, potassium_mg: 4700,
+};
+
+// FDA establishes FOUR separate sets of Daily Values by population group
+// (21 CFR 101.9) — this app supports the three relevant to people actually
+// eating solid food. Figures verified directly against 21 CFR 101.9 (Sep
+// 2026). "adults_children_4plus" duplicates DAILY_VALUES above so callers
+// can always look up a group by name, including the default.
+const AGE_GROUP_DAILY_VALUES = {
+  adults_children_4plus: { ...DAILY_VALUES },
+  // FDA reference for children 1 through 3 years of age.
+  children_1_3: {
+    calories: 1000, // informal reference (not an FDA %DV entry) for display only
+    total_fat_g: 39, saturated_fat_g: 10, cholesterol_mg: 300, sodium_mg: 1500,
+    total_carbs_g: 150, fiber_g: 14, total_sugars_g: 50, added_sugars_g: 25,
+    protein_g: 13, vitamin_d_mcg: 15, calcium_mg: 700, iron_mg: 7, potassium_mg: 3000,
+  },
+  // FDA reference for pregnant and lactating women.
+  pregnant_lactating: {
+    calories: 2200, // informal reference (not an FDA %DV entry) for display only
+    total_fat_g: 78, saturated_fat_g: 20, cholesterol_mg: 300, sodium_mg: 2300,
+    total_carbs_g: 275, fiber_g: 28, total_sugars_g: 50, added_sugars_g: 50,
+    protein_g: 71, vitamin_d_mcg: 15, calcium_mg: 1300, iron_mg: 27, potassium_mg: 5100,
+  },
+};
+
+const PLAUSIBLE_RANGE = {
+  calories: [0, 2000], total_fat_g: [0, 100], saturated_fat_g: [0, 60],
+  trans_fat_g: [0, 20], cholesterol_mg: [0, 500], sodium_mg: [0, 5000],
+  total_carbs_g: [0, 150], fiber_g: [0, 60], total_sugars_g: [0, 150],
+  added_sugars_g: [0, 150], protein_g: [0, 100],
+  vitamin_d_mcg: [0, 100], calcium_mg: [0, 2000], iron_mg: [0, 50], potassium_mg: [0, 6000],
+};
+
+const NUM = '([0-9OoIl]+\\.?[0-9]*)';
+
+const G_UNIT = '[g)93]';
+const MG_UNIT = 'm[ga9]';
+
+// Dual-column labels ("Per Serving | Per Container", e.g. single-serve
+// pints/tubs) print the SAME nutrient twice on one line, e.g.
+// "Total Fat 20g 61g 26% 78%". This appends an OPTIONAL second
+// number+unit capture right after the first, so:
+//   - single-column labels (the overwhelming majority) match exactly as
+//     before — the optional group simply never matches, zero behavior
+//     change (verified by the existing single-column test suite still
+//     passing unmodified).
+//   - dual-column labels where both amounts appear back-to-back
+//     ("20g 61g ...") capture the per-container amount into group 2.
+//   - dual-column labels where each amount is immediately followed by its
+//     own %DV ("20g 26% 61g 78%") do NOT match group 2 here (the next
+//     token is a "%", not a unit) — this is a deliberate, safe
+//     degradation: we still get the correct per-serving amount, we just
+//     don't also capture the per-container figure for that layout. This
+//     is untested against real dual-column OCR output (no sample was
+//     available), so both plausible orderings are covered defensively
+//     rather than assuming one.
+function withOptionalSecondValue(unitClass, strictUnitClass) {
+  return NUM + '\\s*' + unitClass + '(?:\\s+' + NUM + '\\s*' + strictUnitClass + ')?';
+}
+// The SECOND value always uses a STRICT unit (literal "g"/"mg" only, no
+// digit-fusion fallback chars). G_UNIT/MG_UNIT include "9"/"3"/"a" to
+// recover a unit OCR mangled into a trailing digit right after THE FIRST
+// number on a line — reusing that same tolerant class for the second
+// capture turned out to consume part of a following percent sign instead
+// (e.g. "10g 13%" was misread as a second value "1" with unit "3"),
+// caught by this file's own test suite while building this. A genuine
+// per-container value OCR'd with a similarly mangled unit simply won't be
+// captured (no perContainer for that field) rather than risk a wrong one.
+const G_UNIT_STRICT = '[g)]';
+const MG_UNIT_STRICT = 'mg';
+
+const PATTERNS = {
+  calories: new RegExp('(?:calories|energy)\\s*(?:k?cal)?\\s*[:.]?\\s*(?:[\\d.]+\\s*kj\\s*[/,]?\\s*)?' + NUM + '\\s*(?:k?cal)?', 'i'),
+  // Scoped to the 9 core macro fields most commonly duplicated on
+  // dual-column ("Per Serving | Per Container") labels — see
+  // withOptionalSecondValue above. Micronutrients and calories are left
+  // as single-capture (calories already has its own multi-format
+  // handling; extending it further without a real dual-column sample to
+  // test against risks misreading unrelated numbers as a second value).
+  total_fat_g: new RegExp('(?:total\\s*fat|(?<!saturated\\s)(?<!trans\\s)\\bfat)\\s*[:.]?\\s*' + withOptionalSecondValue(G_UNIT, G_UNIT_STRICT), 'i'),
+  saturated_fat_g: new RegExp('(?:saturated fat|(?:of which\\s*)?saturates)\\s*[:.]?\\s*' + withOptionalSecondValue(G_UNIT, G_UNIT_STRICT), 'i'),
+  trans_fat_g: new RegExp('trans fat\\s*[:.]?\\s*' + withOptionalSecondValue(G_UNIT, G_UNIT_STRICT), 'i'),
+  cholesterol_mg: new RegExp('cholesterol\\s*[:.]?\\s*' + withOptionalSecondValue(MG_UNIT, MG_UNIT_STRICT), 'i'),
+  sodium_mg: new RegExp('sodium\\s*[:.]?\\s*' + withOptionalSecondValue(MG_UNIT, MG_UNIT_STRICT), 'i'),
+  total_carbs_g: new RegExp('(?:total\\s*)?carboh[yi]d[nr]ate\\s*[:.]?\\s*' + withOptionalSecondValue(G_UNIT, G_UNIT_STRICT), 'i'),
+  fiber_g: new RegExp('(?:dietary\\s*)?fib(?:er|re)\\s*(?:less than\\s*)?[:.]?\\s*' + withOptionalSecondValue(G_UNIT, G_UNIT_STRICT), 'i'),
+  total_sugars_g: new RegExp('(?:total\\s+|of which\\s*)?(?<!added\\s)sugars?\\s*(?:less than\\s*)?[:.]?\\s*' + withOptionalSecondValue(G_UNIT, G_UNIT_STRICT), 'i'),
+  added_sugars_g: new RegExp('includes\\s*' + NUM + '\\s*' + G_UNIT + '\\s*added sugars', 'i'),
+  protein_g: new RegExp('protein\\s*[:.]?\\s*' + withOptionalSecondValue(G_UNIT, G_UNIT_STRICT), 'i'),
+  vitamin_d_mcg: new RegExp('vitamin\\s*d\\s*[:.]?\\s*' + NUM + '\\s*mc[g9]', 'i'),
+  calcium_mg: new RegExp('calcium\\s*[:.]?\\s*' + NUM + '\\s*' + MG_UNIT, 'i'),
+  iron_mg: new RegExp('iron\\s*[:.]?\\s*' + NUM + '\\s*' + MG_UNIT, 'i'),
+  potassium_mg: new RegExp('potassium\\s*[:.]?\\s*' + NUM + '\\s*' + MG_UNIT, 'i'),
+};
+
+// Fields extended with an optional per-container second capture (group 2
+// in their pattern) — used by parseNutrition to know which matches may
+// have a meaningful match[2].
+const DUAL_COLUMN_FIELDS = new Set([
+  'total_fat_g', 'saturated_fat_g', 'trans_fat_g', 'cholesterol_mg',
+  'sodium_mg', 'total_carbs_g', 'fiber_g', 'total_sugars_g', 'protein_g',
+]);
+
+const SALT_PATTERN = new RegExp('salt\\s*[:.]?\\s*' + NUM + '\\s*' + G_UNIT, 'i');
+
+function cleanNum(raw) {
+  const fixed = raw.replace(/O/g, '0').replace(/o/g, '0').replace(/I/g, '1').replace(/l/g, '1');
+  const value = parseFloat(fixed);
+  return Number.isNaN(value) ? null : value;
 }
 
-# Source: US FDA 21 CFR 101.9(c)(9) -- the Reference Daily Intakes (RDI) and
-# Daily Reference Values (DRV) table used on the current (2016 final rule,
-# 81 FR 33742) Nutrition Facts label, for a 2000-calorie diet. These are the
-# SAME numbers printed as "%DV" on real US nutrition labels, which is why
-# the %DV cross-check logic in parse_nutrition() can compare our own
-# computed %DV against the one Tesseract read off the label itself.
-#
-# total_sugars_g is deliberately EXCLUDED from this table. The FDA table
-# does not define a %DV for total sugars -- only added_sugars_g has an
-# official DV (50g), which is why real US labels never print a %DV next to
-# "Total Sugars." An earlier version of this code reused added sugar's 50g
-# DV as a stand-in for total sugars; that was this project's own invented
-# number with no FDA basis, so it's been removed rather than kept as an
-# unlabeled approximation. Total sugars is still extracted and reported
-# (see NUTRITION_PATTERNS / accuracy_report.md), it just isn't scored via
-# %DV or included in calculate_health_score()'s weighted penalty -- only
-# added_sugars_g (which does have a real FDA DV) contributes to the score.
-DAILY_VALUES = {
-    'calories': 2000, 'total_fat_g': 78, 'saturated_fat_g': 20,
-    'cholesterol_mg': 300, 'sodium_mg': 2300, 'total_carbs_g': 275,
-    'fiber_g': 28, 'added_sugars_g': 50, 'protein_g': 50,
+function parseNutrition(text) {
+  const data = {};
+  const corrections = [];
+  const perContainer = {};
+
+  for (const [key, pattern] of Object.entries(PATTERNS)) {
+    const match = text.match(pattern);
+    if (!match) continue;
+
+    let value = cleanNum(match[1]);
+    if (value === null) continue;
+
+    const [lo, hi] = PLAUSIBLE_RANGE[key] || [0, Infinity];
+    if (value < lo || value > hi) continue;
+
+    // Dual-column ("Per Serving | Per Container") labels print this same
+    // nutrient a second time on the same line — captured optionally as
+    // match[2] by withOptionalSecondValue (see PATTERNS). Kept separate
+    // from the primary per-serving `value` used everywhere else (%DV,
+    // health score) so a per-container figure never gets treated as the
+    // per-serving amount.
+    if (DUAL_COLUMN_FIELDS.has(key) && match[2] !== undefined) {
+      const perContainerValue = cleanNum(match[2]);
+      if (perContainerValue !== null && perContainerValue >= lo && perContainerValue <= hi) {
+        perContainer[key] = perContainerValue;
+      }
+    }
+
+    if (key in DAILY_VALUES) {
+      const afterMatch = text.slice(match.index + match[0].length);
+      const newlineIdx = afterMatch.indexOf('\n');
+      const windowEnd = newlineIdx === -1 ? 15 : Math.min(15, newlineIdx);
+      const window = afterMatch.slice(0, windowEnd);
+      const pctMatch = window.match(/(\d{1,3})\s*%/);
+      if (pctMatch) {
+        const declaredPct = parseFloat(pctMatch[1]);
+        const ourPct = (value / DAILY_VALUES[key]) * 100;
+        if (declaredPct > 0 && ourPct > 0) {
+          const ratio = ourPct / declaredPct;
+          if (ratio > 4 || ratio < 0.25) {
+            const corrected = Math.round((declaredPct / 100) * DAILY_VALUES[key] * 100) / 100;
+            corrections.push({
+              field: key, from: value, to: corrected, reason: `%DV cross-check (declared ${declaredPct}%)`,
+            });
+            value = corrected;
+          }
+        }
+      }
+    }
+
+    data[key] = key === 'calories' ? Math.round(value) : value;
+  }
+
+  if (Object.keys(perContainer).length) {
+    data.perContainer = perContainer;
+    // Explicit flag (rather than making callers infer it from the
+    // presence of `perContainer`) so the frontend/report can show a
+    // "this label lists Per Serving and Per Container values — Per
+    // Serving is used here" note without extra logic.
+    data.dualColumnLabel = true;
+  }
+
+  if (data.sodium_mg == null) {
+    const saltMatch = text.match(SALT_PATTERN);
+    if (saltMatch) {
+      const saltG = cleanNum(saltMatch[1]);
+      if (saltG !== null && saltG >= 0 && saltG <= 20) {
+        data.sodium_mg = Math.round(saltG * 400);
+        corrections.push({
+          field: 'sodium_mg', from: null, to: data.sodium_mg,
+          reason: `derived from printed salt value (${saltG}g × 400)`,
+        });
+      }
+    }
+  }
+
+  const servingMatch = text.match(/serving size\s*([^\n]+)/i);
+  if (servingMatch) data.serving_size = servingMatch[1].trim();
+
+  if (corrections.length) data.corrections = corrections;
+
+  return data;
 }
 
-_PLAUSIBLE_RANGE = {
-    'calories': (0, 2000), 'total_fat_g': (0, 100), 'saturated_fat_g': (0, 60),
-    'trans_fat_g': (0, 20), 'cholesterol_mg': (0, 500), 'sodium_mg': (0, 5000),
-    'total_carbs_g': (0, 150), 'fiber_g': (0, 60), 'total_sugars_g': (0, 150),
-    'added_sugars_g': (0, 150), 'protein_g': (0, 100),
+function parseIngredients(text) {
+  const startMatch = text.match(/ingredients\s*:?/i);
+  if (!startMatch) return [];
+
+  let cleaned = text.slice(startMatch.index + startMatch[0].length).trim();
+
+  const stopPatterns = [
+    /nutrition facts/i, /serving size/i,
+    /contains\s*:?\s*-?\s*(milk|soy|wheat|egg|nuts?|tree nuts?)/i,
+    /percent daily values/i, /calories from fat/i, /%\s*daily value/i,
+  ];
+  let cutIdx = cleaned.length;
+  for (const pat of stopPatterns) {
+    const m = cleaned.match(pat);
+    if (m && m.index < cutIdx) cutIdx = m.index;
+  }
+  cleaned = cleaned.slice(0, cutIdx).trim();
+  cleaned = cleaned.replace(/\s*\n\s*/g, ' ');
+
+  return splitTopLevelCommas(cleaned)
+    .map((item) => item.trim().replace(/^\.+|\.+$/g, ''))
+    .map((item) => item.replace(/^(?:and|or)\s+/i, '').trim())
+    .filter((item) => item.length > 0 && item.length <= 120);
 }
 
-
-def parse_serving_size(text):
-    """Extracts a STRUCTURED serving size instead of leaving it as opaque raw
-    text. REAL GAP FOUND (and now fixed): a label like "Serving Size 1 Bag"
-    was previously just stored as the raw string "1 Bag" with no numeric
-    gram amount at all -- there was no way to compare it against
-    OpenFoodFacts' per-100g values, or to know how many grams "one serving"
-    actually is. This still can't invent a number that isn't on the label,
-    but it now explicitly says so via `ambiguous: True` instead of silently
-    returning an opaque string that looks the same whether it was parseable
-    or not.
-
-    Returns None if no "Serving Size" line was found at all, otherwise:
-    {
-      'raw': the original text after "Serving Size",
-      'amount_g': float grams if extractable, else None,
-      'household_measure': e.g. "1 cup", "2 slices", "4oz" (text before any
-                            parenthetical gram amount), else None,
-      'ambiguous': True if no gram-equivalent could be extracted at all --
-                   callers must NOT assume a serving is 100g or any other
-                   default when this is True.
+function splitTopLevelCommas(text) {
+  const items = [];
+  let current = '';
+  let depth = 0;
+  for (const char of text) {
+    if (char === '(' || char === '[') depth++;
+    else if (char === ')' || char === ']') depth = Math.max(0, depth - 1);
+    if (char === ',' && depth === 0) {
+      items.push(current);
+      current = '';
+    } else {
+      current += char;
     }
-    """
-    m = re.search(r'serving size\s*([^\n]+)', text, re.IGNORECASE)
-    if not m:
-        # Non-US ("Canadian") labels often say "Per 2 slices (64 g)" instead
-        # of "Serving Size ...". Anchored to the start of a line so this
-        # doesn't accidentally match "servings PER container" appearing
-        # mid-line elsewhere on the label.
-        # A dual-column header line ("Per Serving | Per Container") also starts
-        # with "Per" but is a column heading, not a serving size -- skip it.
-        for cand in re.finditer(r'^\s*per\s+([^\n]+)', text, re.IGNORECASE | re.MULTILINE):
-            if re.match(r'(?:serving|container|package|pack)\b', cand.group(1).strip(), re.IGNORECASE):
-                continue
-            m = cand
-            break
-    if not m:
-        return None
-    raw = m.group(1).strip()
-
-    amount_g = None
-    # Case 1: parenthetical grams, e.g. "1 cup (240 g)", "2 slices (64g)"
-    paren_match = re.search(r'\(\s*' + _NUM + r'\s*' + _G_UNIT + r'\s*[/)]', raw, re.IGNORECASE)
-    if paren_match:
-        val = _clean_num(paren_match.group(1))
-        if val is not None and 0 < val <= 1000:
-            amount_g = val
-    if amount_g is None:
-        # Case 2: grams given directly with no parentheses, e.g. "100g/3.5oz"
-        direct_match = re.search(r'^\s*' + _NUM + r'\s*g\b', raw, re.IGNORECASE)
-        if direct_match:
-            val = _clean_num(direct_match.group(1))
-            if val is not None and 0 < val <= 1000:
-                amount_g = val
-
-    household_match = re.match(r'([^(]+)', raw)
-    household = household_match.group(1).strip() if household_match else None
-    if household:
-        household = household.rstrip('/').strip() or None
-
-    return {
-        'raw': raw,
-        'amount_g': amount_g,
-        'household_measure': household,
-        'ambiguous': amount_g is None,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Dual-column labels ("Per Serving | Per Container")
-# ---------------------------------------------------------------------------
-# Previously every field just took the FIRST number after its name. That is
-# only right because US labels usually print the per-serving column first --
-# a label that prints per-container first silently returned the wrong number.
-# Now the header is read: if (and only if) an ADJACENT "per container ... per
-# serving" header pair is found, the second amount on each row is used.
-# Deliberately requires the two phrases to sit next to each other, because a
-# normal single-column US label contains both phrases far apart
-# ("Servings per container 4" ... "Amount per serving") and must NOT trigger this.
-
-_DUAL_HEADER_RE = re.compile(
-    r'per\s*(serving|container|package|pack)\b[^A-Za-z0-9\n]{0,15}\n?[^A-Za-z0-9\n]{0,15}per\s*(serving|container|package|pack)\b',
-    re.IGNORECASE,
-)
-
-
-def detect_serving_column_index(text):
-    """Returns 0 if the per-serving amount is the first number on each row (or no
-    dual-column header exists), 1 if a header shows per-container printed first."""
-    for m in _DUAL_HEADER_RE.finditer(text):
-        first, second = m.group(1).lower(), m.group(2).lower()
-        if first == 'serving' and second != 'serving':
-            return 0
-        if first != 'serving' and second == 'serving':
-            return 1
-    return 0
-
-
-def _second_amount_on_line(text, pos, key):
-    """Finds the next amount after `pos` on the same line, skipping %DV figures.
-    Returns (raw_number_string, end_position) or None."""
-    line_end = text.find('\n', pos)
-    line_end = len(text) if line_end == -1 else line_end
-    rest = text[pos:line_end]
-    if key == 'calories':
-        unit = ''
-    elif key in ('cholesterol_mg', 'sodium_mg'):
-        unit = r'\s*' + _MG_UNIT
-    else:
-        unit = r'\s*' + _G_UNIT
-    for m in re.finditer(r'(\d[0-9OoIl]*\.?[0-9]*)' + unit, rest):
-        if rest[m.end():].lstrip().startswith('%'):
-            continue  # this is a %DV figure, not an amount
-        return m.group(1), pos + m.end()
-    return None
-
-
-# OCR on a rotated photo can clip the first letters of a line where it touches
-# the image edge -- reproduced on a synthetic 30-degree rotation, where the
-# "Calories 230" row came back from Tesseract as "ories 230" and calories was
-# silently lost. Repair ONLY a line that starts with the tail of the word and is
-# immediately followed by a number, so ordinary words ending in "ories"
-# (categories, stories, ...) mid-line or without a number are never touched.
-_TRUNCATED_CALORIES_RE = re.compile(r'^([ \t]*)(?:calo|cal|ca|c)?ories(?=[ \t]*:?[ \t]*\d)', re.IGNORECASE | re.MULTILINE)
-
-
-def _repair_truncated_calories(text):
-    return _TRUNCATED_CALORIES_RE.sub(r'\1Calories', text)
-
-
-# ---------------------------------------------------------------------------
-# 4b. Positional fallback for keyword-level OCR corruption
-# ---------------------------------------------------------------------------
-# REAL, DIFFERENT TECHNIQUE from fuzzy keyword-correction (see
-# fuzzy_correct_keywords above): some real OCR misreads corrupt a nutrient
-# keyword too badly for ANY safe text-similarity threshold to recover
-# ("Saturated" -> "Sanented" is only 59% similar; "Cholesterol" -> "Cuenta"
-# is only 35% similar -- lowering the threshold to catch these would start
-# misfiring on unrelated garbage elsewhere). This does NOT try to read the
-# keyword at all. Instead it exploits a completely different, independent
-# fact: the FDA mandates a FIXED, legally standardized ORDER for nutrients
-# on a Nutrition Facts label (Total Fat, Saturated Fat, Trans Fat,
-# Cholesterol, Sodium, Total Carbohydrate, Dietary Fiber, Total Sugars,
-# Added Sugars, Protein -- 21 CFR 101.9). If two fields on either side of a
-# gap were found normally (by keyword), and the number of unclaimed
-# "value-shaped" lines in between exactly matches the number of missing
-# fields expected there in the mandated order, each can be assigned
-# WITHOUT ever reading its (possibly unreadable) keyword.
-#
-# Deliberately conservative: only assigns when the count matches exactly
-# and the unit (g vs mg) is consistent with what that position expects. If
-# the count doesn't match, it leaves the field missing rather than guess --
-# missing-but-honest beats a wrong number for a system flagging health risks.
-
-_FDA_FIELD_ORDER = [
-    ('total_fat_g', 'g'), ('saturated_fat_g', 'g'), ('trans_fat_g', 'g'),
-    ('cholesterol_mg', 'mg'), ('sodium_mg', 'mg'), ('total_carbs_g', 'g'),
-    ('fiber_g', 'g'), ('total_sugars_g', 'g'), ('added_sugars_g', 'g'),
-    ('protein_g', 'g'),
-]
-
-_GENERIC_VALUE_RE = re.compile(r'(\d{1,4}\.?\d*)\s*(mg|g)\b', re.IGNORECASE)
-
-
-def _line_index_of(text, char_offset):
-    return text.count('\n', 0, char_offset)
-
-
-def _positional_fallback(text, data):
-    known_line_of_field = {}
-    for key, pattern in NUTRITION_PATTERNS.items():
-        if key not in data:
-            continue
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            known_line_of_field[key] = _line_index_of(text, match.start())
-
-    lines = text.split('\n')
-    claimed_lines = set(known_line_of_field.values())
-    candidate_lines = {}  # line_idx -> (value, unit)
-    for idx, line in enumerate(lines):
-        if idx in claimed_lines:
-            continue
-        m = _GENERIC_VALUE_RE.search(line)
-        if m:
-            candidate_lines[idx] = (m.group(1), m.group(2).lower())
-
-    order_keys = [k for k, _ in _FDA_FIELD_ORDER]
-    for i, (key, expected_unit) in enumerate(_FDA_FIELD_ORDER):
-        if key in data:
-            continue
-        # Find the nearest already-known anchor before and after this
-        # field's position in the mandated order.
-        prev_line = None
-        for j in range(i - 1, -1, -1):
-            if order_keys[j] in known_line_of_field:
-                prev_line = known_line_of_field[order_keys[j]]
-                break
-        next_line = None
-        for j in range(i + 1, len(order_keys)):
-            if order_keys[j] in known_line_of_field:
-                next_line = known_line_of_field[order_keys[j]]
-                break
-        if prev_line is None or next_line is None or next_line <= prev_line + 1:
-            continue
-
-        # All fields strictly between this position and the next known
-        # anchor, in mandated order, that are still missing.
-        start_idx = order_keys.index(key)
-        gap_fields = []
-        for j in range(start_idx, len(order_keys)):
-            k2 = order_keys[j]
-            if k2 in known_line_of_field:
-                break
-            if k2 not in data:
-                gap_fields.append(k2)
-
-        gap_candidate_lines = sorted(ln for ln in candidate_lines if prev_line < ln < next_line)
-        if len(gap_candidate_lines) != len(gap_fields):
-            continue  # ambiguous -- don't guess
-
-        for field_key, line_idx in zip(gap_fields, gap_candidate_lines):
-            expected = dict(_FDA_FIELD_ORDER)[field_key]
-            raw_value, unit = candidate_lines[line_idx]
-            if unit != expected:
-                continue  # unit mismatch -- safety check failed, skip this one
-            value = _clean_num(raw_value, field=field_key)
-            if value is None:
-                continue
-            lo, hi = _PLAUSIBLE_RANGE.get(field_key, (0, float('inf')))
-            if not (lo <= value <= hi):
-                continue
-            data[field_key] = value
-            claimed_lines.add(line_idx)
-
-    return data
-
-
-def parse_nutrition(text):
-    data = {}
-    text = _repair_truncated_calories(text)
-    serving_col = detect_serving_column_index(text)
-    for key, pattern in NUTRITION_PATTERNS.items():
-        match = re.search(pattern, text, re.IGNORECASE)
-        if not match:
-            continue
-        raw_amount, amount_end = match.group(1), match.end()
-        if serving_col == 1:
-            # Per-container is printed first, so the first amount is the WRONG
-            # column. Take the second amount on the row; if there isn't one,
-            # leave the field out (missing is honest, a per-container value
-            # reported as per-serving is not).
-            second = _second_amount_on_line(text, match.end(), key)
-            if second is None:
-                continue
-            raw_amount, amount_end = second
-        value = _clean_num(raw_amount, field=key)
-        if value is None:
-            continue
-        lo, hi = _PLAUSIBLE_RANGE.get(key, (0, float('inf')))
-        if not (lo <= value <= hi):
-            continue
-
-        if key in DAILY_VALUES:
-            # Bound the %DV lookahead at the next newline (in addition to the
-            # 15-char cap). REAL BUG FOUND during accuracy testing: without
-            # this, "Calories 140\n\nFat 1.5g 2%" let the cross-check window
-            # bleed across the line break and grab FAT's "2%" as if it were
-            # calories' declared %DV -- which then "corrected" a correctly
-            # OCR'd 140 down to a wrong 40. The JS version
-            # (src/nutritionParser.js) already had this newline bound; the
-            # Python/notebook version did not.
-            after_match = text[amount_end:]
-            newline_idx = after_match.find('\n')
-            window_end = 15 if newline_idx == -1 else min(15, newline_idx)
-            window = after_match[:window_end]
-            pct_match = re.search(r'(\d{1,3})\s*%', window)
-            if pct_match:
-                declared_pct = float(pct_match.group(1))
-                our_pct = (value / DAILY_VALUES[key]) * 100
-                if declared_pct > 0 and our_pct > 0:
-                    ratio = our_pct / declared_pct
-                    if ratio > 2.5 or ratio < 0.4:
-                        corrected_value = round(declared_pct / 100 * DAILY_VALUES[key], 2)
-                        _correction_log.append({
-                            'type': 'dv_crosscheck', 'field': key,
-                            'ocr_value': value, 'corrected_value': corrected_value,
-                            'declared_pct': declared_pct,
-                        })
-                        value = corrected_value
-
-        data[key] = int(value) if key == 'calories' else value
-
-    # FIX (real gap found): also attach a structured parse of the serving
-    # size instead of leaving callers to re-parse the raw string themselves.
-    # See parse_serving_size()'s docstring for what 'ambiguous' means. Also
-    # now covers non-US "Per X" labels, so serving_size (raw) is set from
-    # the same parse instead of a separate regex that only matched "Serving
-    # Size ..." and silently missed the Canadian format.
-    parsed_serving = parse_serving_size(text)
-    if parsed_serving is not None:
-        data['serving_size'] = parsed_serving['raw']
-        data['serving_size_parsed'] = parsed_serving
-
-    # Positional fallback for keywords too corrupted for fuzzy-correction
-    # to safely fix -- see _positional_fallback's docstring above.
-    data = _positional_fallback(text, data)
-    return data
-
-
-def parse_ingredients(text):
-    # REAL BUG (found on the held-out test set, lucky_charms_cereal.jpg,
-    # which OCR'd correctly but still returned garbage ingredients): this
-    # used to strip only the FIRST "ingredients" occurrence wherever it
-    # fell in the whole text, then hunt for stop-words (like "nutrition
-    # facts") across the ENTIRE remaining text -- including everything
-    # BEFORE that occurrence. On a label where the nutrition facts panel
-    # is read before the ingredients list (nutrition panel typically comes
-    # first on a real package), "nutrition facts"/"serving size" match
-    # almost immediately at/near position 0, so the cut point landed right
-    # at the start of the document and the real ingredients list (which
-    # was read correctly by OCR, further down) was thrown away entirely.
-    #
-    # Fix: find WHERE "ingredients" occurs first, keep only the text AFTER
-    # that point, and only search for stop-words within that substring --
-    # not the whole original text.
-    match = re.search(r'ingredients\s*:?', text, flags=re.IGNORECASE)
-    if not match:
-        return []
-    text = text[match.end():].strip()
-
-    stop_patterns = [
-        r'nutrition facts', r'serving size', r'contains\s+(milk|soy|wheat|egg|nuts?|tree nuts?)',
-        r'percent daily values', r'calories from fat', r'%\s*daily value',
-    ]
-    cut_idx = len(text)
-    for pat in stop_patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m and m.start() < cut_idx:
-            cut_idx = m.start()
-    text = text[:cut_idx].strip()
-    text = re.sub(r'\s*\n\s*', ' ', text)
-    items = [item.strip(' .') for item in text.split(',') if item.strip(' .')]
-    items = [i for i in items if len(i) <= 60]
-    return items
-
-
-# ---------------------------------------------------------------------------
-# 6. Ingredient intelligence
-# ---------------------------------------------------------------------------
-
-ALLERGEN_KEYWORDS = {
-    'Milk/Dairy': ['milk', 'dairy', 'lactose', 'casein', 'whey', 'butter', 'cream', 'cheese'],
-    'Soy': ['soy', 'soya', 'soybean'],
-    'Wheat/Gluten': ['wheat', 'gluten', 'barley', 'rye', 'flour'],
-    'Nuts': ['almond', 'cashew', 'walnut', 'peanut', 'pistachio', 'hazelnut'],
-    'Egg': ['egg', 'albumin'],
-    'Sesame': ['sesame', 'tahini'],
-    'Sulphites': ['sulphite', 'sulfite', 'so2'],
-    'Mustard': ['mustard'],
-    'Celery': ['celery', 'celeriac'],
-    'Fish': ['fish', 'anchovy', 'cod', 'salmon', 'tuna'],
-    'Crustaceans': ['shrimp', 'prawn', 'crab', 'lobster'],
-    'Molluscs': ['mussel', 'oyster', 'squid', 'snail', 'clam', 'scallop'],
+  }
+  if (current.trim()) items.push(current);
+  return items;
 }
 
-# Sourced and cited keyword lists (previously an uncited, ad-hoc list per
-# diet -- also previously ONLY implemented for vegan in this Python file,
-# while nutritionParser.js had all five; ported here for consistency).
-# See nutritionParser.js's matching block for full source citations.
-VEGAN_CONFLICT_KEYWORDS = [
-    'milk', 'whey', 'casein', 'egg', 'honey', 'gelatin', 'lard', 'meat',
-    'fish', 'chicken', 'beef', 'pork', 'carmine', 'cochineal', 'isinglass',
-    'shellac', 'beeswax', 'lanolin',
-]
-VEGETARIAN_CONFLICT_KEYWORDS = ['gelatin', 'lard', 'meat', 'fish', 'chicken', 'beef', 'pork', 'rennet', 'isinglass']
+const ALLERGEN_KEYWORDS = {
+  'Milk/Dairy': ['milk', 'dairy', 'lactose', 'casein', 'whey', 'butter', 'cream', 'cheese'],
+  Soy: ['soy', 'soya', 'soybean'],
+  'Wheat/Gluten': ['wheat', 'gluten', 'barley', 'rye', 'flour'],
+  Nuts: ['almond', 'cashew', 'walnut', 'peanut', 'pistachio', 'hazelnut'],
+  Egg: ['egg', 'albumin'],
+  Sesame: ['sesame', 'tahini'],
+};
 
-HALAL_KOSHER_DEFINITE_CONFLICTS = ['pork', 'bacon', 'ham', 'lard', 'alcohol', 'wine', 'rum', 'beer', 'ethanol', 'blood']
-HALAL_KOSHER_UNCERTAIN_INGREDIENTS = [
-    'gelatin', 'rennet', 'rennin', 'pepsin', 'whey', 'mono- and diglycerides',
-    'monoglycerides', 'diglycerides', 'l-cysteine', 'natural flavor',
-    'natural flavors', 'glycerin', 'glycerine', 'vanilla extract',
-]
+// GAP FIX (ported from src/nutrition_parser.py's _keyword_matches /
+// _strip_plant_milk_exceptions, which this file never had): plain
+// `.includes()` matching flags "Eggplant" as an Egg conflict and
+// "Almonds" would fail to match "almond" as-written elsewhere. Switching
+// every keyword check below (allergens AND all diet-compatibility flags)
+// to word-boundary matching, with an optional trailing 's' for plurals,
+// fixes both directions at once:
+//   - "eggplant" no longer matches "egg" (no word boundary before "plant")
+//   - "eggs" / "almonds" / "walnuts" still match their singular keyword
+// "milk" gets one extra step: strip known plant-milk phrases ("coconut
+// milk", "almond milk", etc.) before checking, so those aren't flagged as
+// dairy — same exception list as the Python module.
+const _PLANT_MILK_EXCEPTIONS = [
+  'coconut milk', 'almond milk', 'soy milk', 'soya milk', 'oat milk',
+  'rice milk', 'cashew milk', 'hemp milk', 'pea milk',
+];
 
-PALEO_CONFLICT_KEYWORDS = [
-    'sugar', 'wheat', 'corn', 'dairy', 'milk', 'legume', 'soy', 'peanut',
-    'artificial', 'rice', 'oat', 'barley', 'lentil', 'bean', 'potato starch',
-    'canola oil', 'soybean oil',
-]
-HIGH_CARB_KEYWORDS = ['sugar', 'corn syrup', 'wheat flour', 'rice', 'maltodextrin', 'dextrose']
+function _stripPlantMilkExceptions(text) {
+  let cleaned = text;
+  for (const phrase of _PLANT_MILK_EXCEPTIONS) {
+    cleaned = cleaned.split(phrase).join('');
+  }
+  return cleaned;
+}
 
-FODMAP_CONFLICT_KEYWORDS = [
-    'garlic', 'onion', 'honey', 'high fructose corn syrup', 'wheat', 'rye',
-    'inulin', 'chicory root', 'fructo-oligosaccharide', 'fos',
-    'galacto-oligosaccharide', 'gos', 'sorbitol', 'mannitol', 'xylitol',
-    'maltitol', 'isomalt', 'lactitol', 'erythritol',
-    'e420', 'e421', 'e953', 'e965', 'e966', 'e967', 'e968',
-    'chickpea', 'lentil', 'kidney bean', 'cashew', 'pistachio',
-]
+function _escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-# BUG FIX (found during accuracy review): plain substring matching flagged
-# "Eggplant" as an Egg allergen/vegan conflict because "egg" is a substring
-# of "eggplant". Switched to \b word-boundary matching below, which fixes
-# compound WORDS like "eggplant" (no space) automatically. It does NOT fix
-# compound PHRASES like "coconut milk", where "milk" really is its own
-# word -- so those need an explicit exceptions list instead.
-_PLANT_MILK_EXCEPTIONS = [
-    'coconut milk', 'almond milk', 'soy milk', 'soya milk', 'oat milk',
-    'rice milk', 'cashew milk', 'hemp milk', 'pea milk',
-]
+function _keywordMatches(keyword, text) {
+  const haystack = keyword === 'milk' ? _stripPlantMilkExceptions(text) : text;
+  return new RegExp(`\\b${_escapeRegExp(keyword)}s?\\b`).test(haystack);
+}
 
+const ADDITIVE_KEYWORDS = {
+  artificialColors: ['red 40', 'red 3', 'yellow 5', 'yellow 6', 'blue 1', 'blue 2', 'green 3'],
+  artificialSweeteners: ['aspartame', 'sucralose', 'acesulfame', 'saccharin', 'neotame', 'advantame'],
+  nitritesNitrates: ['sodium nitrite', 'sodium nitrate', 'potassium nitrite', 'potassium nitrate'],
+  otherPreservatives: ['bht', 'bha', 'tbhq', 'sodium benzoate', 'potassium sorbate', 'sodium metabisulfite', 'sulfur dioxide', 'propyl gallate'],
+  hydrogenatedOils: ['partially hydrogenated', 'hydrogenated vegetable oil', 'hydrogenated palm oil', 'hydrogenated soybean oil', 'hydrogenated cottonseed oil'],
+  flavorEnhancers: ['msg', 'monosodium glutamate', 'disodium inosinate', 'disodium guanylate', "disodium 5'-ribonucleotides"],
+};
 
-def _strip_plant_milk_exceptions(text):
-    """Removes known non-dairy 'X milk' phrases before checking the 'milk'
-    keyword, so e.g. an ingredient list containing only 'Coconut Milk' does
-    not get flagged as containing dairy."""
-    cleaned = text
-    for phrase in _PLANT_MILK_EXCEPTIONS:
-        cleaned = cleaned.replace(phrase, '')
-    return cleaned
-
-
-def _keyword_matches(keyword, text):
-    """Word-boundary match instead of plain substring containment.
-    'egg' matches 'egg whites' and 'egg, salt' but NOT 'eggplant'.
-
-    REGRESSION FOUND AND FIXED: the original word-boundary fix (\\begg\\b)
-    was too strict -- it also stopped matching the PLURAL form, e.g.
-    "Contains: EGGS" no longer matched 'egg' at all, because there is no
-    word boundary between 'g' and 's' in "eggs" (both are word characters).
-    This silently broke allergen detection on real labels, which very
-    commonly use plurals ("Eggs", "Almonds", "Peanuts", "Walnuts"). Allowing
-    an optional trailing 's' keeps "eggplant" correctly excluded (neither
-    "egg\\b" nor "eggs\\b" matches inside "eggplant") while restoring
-    plural matches.
-    """
-    if keyword == 'milk':
-        text = _strip_plant_milk_exceptions(text)
-    return re.search(r'\b' + re.escape(keyword) + r's?\b', text) is not None
-
-
-def detect_allergens(ingredients_list):
-    detected = {}
-    for ingredient in ingredients_list:
-        ing_lower = ingredient.lower()
-        for allergen, keywords in ALLERGEN_KEYWORDS.items():
-            for keyword in keywords:
-                if _keyword_matches(keyword, ing_lower):
-                    detected.setdefault(allergen, [])
-                    if ingredient not in detected[allergen]:
-                        detected[allergen].append(ingredient)
-                    break
-    return detected
-
-
-def parse_declared_allergens(text):
-    """REAL GAP FOUND: allergen detection only ever looked at the parsed
-    ingredient list -- it never used the standardized "Contains: X, Y" or
-    precautionary "May contain: X, Y" statements that real labels print
-    specifically FOR allergen disclosure (these are often more reliable
-    than inferring allergens from ingredient names, and are required by
-    law on US labels when applicable). parse_ingredients() explicitly stops
-    BEFORE these statements (they're not ingredients), so they were
-    silently discarded entirely.
-
-    Returns {'contains': [...], 'may_contain': [...]} -- category names
-    matching ALLERGEN_KEYWORDS' keys. Both lists are empty if neither
-    statement is found on the label.
-    """
-    def _categories_in(phrase):
-        cats = []
-        phrase_lower = phrase.lower()
-        for allergen, keywords in ALLERGEN_KEYWORDS.items():
-            if any(_keyword_matches(kw, phrase_lower) for kw in keywords) and allergen not in cats:
-                cats.append(allergen)
-        return cats
-
-    result = {'contains': [], 'may_contain': []}
-    # "May contain" is checked and stripped out first, so a search for the
-    # plain "Contains" statement afterward can't accidentally match inside
-    # the words "...may CONTAIN traces of...".
-    may_match = re.search(r'may contain\s*:?\s*([^.\n]+)', text, re.IGNORECASE)
-    if may_match:
-        result['may_contain'] = _categories_in(may_match.group(1))
-        text = text[:may_match.start()] + text[may_match.end():]
-    contains_match = re.search(r'\bcontains\s*:?\s*([^.\n]+)', text, re.IGNORECASE)
-    if contains_match:
-        result['contains'] = _categories_in(contains_match.group(1))
-    return result
-
-
-def detect_allergens_full(text, ingredients_list):
-    """Combines allergen detection from the ingredient list (detect_allergens)
-    WITH the label's own declared "Contains:"/"May contain:" statements
-    (parse_declared_allergens), since either source alone misses cases the
-    other catches -- see parse_declared_allergens' docstring. Returns
-    {'confirmed': {allergen: [source, ...]}, 'may_contain': [allergen, ...]}.
-    'confirmed' merges ingredient-list matches and "Contains:" statement
-    matches (both are definite); 'may_contain' stays separate since it's
-    explicitly precautionary, not definite.
-    """
-    from_ingredients = detect_allergens(ingredients_list)
-    declared = parse_declared_allergens(text)
-
-    confirmed = {k: list(v) for k, v in from_ingredients.items()}
-    for allergen in declared['contains']:
-        confirmed.setdefault(allergen, [])
-        if '(declared: "Contains" statement)' not in confirmed[allergen]:
-            confirmed[allergen].append('(declared: "Contains" statement)')
-
-    may_contain = [a for a in declared['may_contain'] if a not in confirmed]
-    return {'confirmed': confirmed, 'may_contain': may_contain}
-
-
-def check_diet_compatibility(ingredients_list):
-    text = " ".join(ingredients_list).lower()
-    vegan_conflicts = [kw for kw in VEGAN_CONFLICT_KEYWORDS if _keyword_matches(kw, text)]
-    vegetarian_conflicts = [kw for kw in VEGETARIAN_CONFLICT_KEYWORDS if _keyword_matches(kw, text)]
-    return {
-        'vegan_friendly': len(vegan_conflicts) == 0, 'vegan_conflicts': vegan_conflicts,
-        'vegetarian_friendly': len(vegetarian_conflicts) == 0, 'vegetarian_conflicts': vegetarian_conflicts,
+function detectAdditives(ingredients) {
+  const detected = {};
+  for (const ingredient of ingredients) {
+    const lower = ingredient.toLowerCase();
+    for (const [category, keywords] of Object.entries(ADDITIVE_KEYWORDS)) {
+      if (keywords.some((kw) => lower.includes(kw))) {
+        if (!detected[category]) detected[category] = [];
+        if (!detected[category].includes(ingredient)) detected[category].push(ingredient);
+      }
     }
+  }
+  return detected;
+}
 
-
-def check_halal_kosher(ingredients_list):
-    """REAL, STRUCTURAL LIMIT (not a bug -- can't be fixed by better code):
-    actual halal/kosher certification depends on facts that never appear in
-    a printed ingredient list (slaughter method, shared equipment,
-    supplier-specific sourcing of ambiguous ingredients like gelatin).
-    Multiple published halal ingredient guides consulted while building
-    this say exactly that about gelatin/mono-diglycerides/glycerin: "if
-    derived from a halal-slaughtered animal, then halal" -- i.e. even
-    domain-expert references can't give a yes/no from the ingredient NAME
-    alone. So this returns two tiers instead of one boolean: ingredients
-    that are essentially always non-halal/non-kosher regardless of source,
-    versus ones that COULD be either depending on unlisted sourcing. A
-    result with no matches in either list means "no red flags found by
-    this text screen", not "certified halal/kosher"."""
-    text = " ".join(ingredients_list).lower()
-    definite = [kw for kw in HALAL_KOSHER_DEFINITE_CONFLICTS if _keyword_matches(kw, text)]
-    uncertain = [kw for kw in HALAL_KOSHER_UNCERTAIN_INGREDIENTS if _keyword_matches(kw, text)]
-    return {
-        'halal_kosher_safe': len(definite) == 0 and len(uncertain) == 0,
-        'definite_conflicts': definite,
-        'uncertain_ingredients': uncertain,
-        'note': 'Ingredient-text screening only -- NOT a substitute for official halal/kosher certification, which depends on slaughter method and supply-chain facts not present on a printed label.',
+function detectAllergens(ingredients) {
+  const detected = {};
+  for (const ingredient of ingredients) {
+    const lower = ingredient.toLowerCase();
+    for (const [allergen, keywords] of Object.entries(ALLERGEN_KEYWORDS)) {
+      if (keywords.some((kw) => _keywordMatches(kw, lower))) {
+        if (!detected[allergen]) detected[allergen] = [];
+        if (!detected[allergen].includes(ingredient)) detected[allergen].push(ingredient);
+      }
     }
+  }
+  return detected;
+}
 
+// Sourced and cited keyword lists (previously an uncited, ad-hoc 6-12 word
+// list per diet). None of these make any check "certified" -- see the
+// halal/kosher function's own comment for why that's a hard, structural
+// limit that no ingredient-text keyword list can cross -- but a sourced,
+// broader list is a genuine accuracy improvement over an arbitrary one.
 
-def check_keto_compatibility(nutrition, ingredients_list):
-    """The <=10g net carbs PER SERVING threshold is a common community/app
-    rule-of-thumb proxy, not an official clinical standard -- published
-    ketogenic-diet guidance defines ketosis targets as ~20-50g net carbs
-    PER DAY, which isn't directly convertible to one per-serving cutoff
-    without knowing how many servings of other foods someone eats that day.
-    Stated here rather than implied as a certified number."""
-    carbs = nutrition.get('total_carbs_g', 0) or 0
-    fiber = nutrition.get('fiber_g', 0) or 0
-    net_carbs = max(carbs - fiber, 0)
-    text = " ".join(ingredients_list).lower()
-    conflicts = [kw for kw in HIGH_CARB_KEYWORDS if _keyword_matches(kw, text)]
-    return {'keto_friendly': net_carbs <= 10 and len(conflicts) == 0, 'net_carbs_g': net_carbs, 'conflicts': conflicts}
+// The Vegan Society (https://www.vegansociety.com/go-vegan/definition-veganism)
+// coined "vegan" and defines it as excluding all forms of animal
+// exploitation -- meat, fish, dairy, eggs, honey, and animal-derived
+// processing aids/additives (gelatin, carmine, isinglass, lard).
+const VEGAN_CONFLICT_KEYWORDS = [
+  'milk', 'whey', 'casein', 'egg', 'honey', 'gelatin', 'lard', 'meat',
+  'fish', 'chicken', 'beef', 'pork', 'carmine', 'cochineal', 'isinglass',
+  'shellac', 'beeswax', 'lanolin',
+];
+const VEGETARIAN_CONFLICT_KEYWORDS = ['gelatin', 'lard', 'meat', 'fish', 'chicken', 'beef', 'pork', 'rennet', 'isinglass'];
 
+// Halal/kosher: sourced from multiple published halal-ingredient guides
+// (Halal Foundation, CIOGC, Islamic Food and Nutrition Council references)
+// cross-checked against each other. Split into two tiers deliberately --
+// see checkHalalKosher()'s docstring for why this matters and what it does
+// NOT mean.
+const HALAL_KOSHER_DEFINITE_CONFLICTS = [
+  'pork', 'bacon', 'ham', 'lard', 'alcohol', 'wine', 'rum', 'beer',
+  'ethanol', 'blood',
+];
+const HALAL_KOSHER_UNCERTAIN_INGREDIENTS = [
+  'gelatin', 'rennet', 'rennin', 'pepsin', 'whey', 'mono- and diglycerides',
+  'monoglycerides', 'diglycerides', 'l-cysteine', 'natural flavor',
+  'natural flavors', 'glycerin', 'glycerine', 'vanilla extract',
+];
 
-def check_paleo_compatibility(ingredients_list):
-    text = " ".join(ingredients_list).lower()
-    conflicts = [kw for kw in PALEO_CONFLICT_KEYWORDS if _keyword_matches(kw, text)]
-    return {'paleo_friendly': len(conflicts) == 0, 'conflicts': conflicts}
+// Paleo: based on Loren Cordain's original defining framework (the
+// researcher who popularized the modern paleo diet) -- excludes grains,
+// legumes, dairy, refined sugar, and processed/refined oils, on the
+// premise these are foods agriculture introduced after the Paleolithic era.
+const PALEO_CONFLICT_KEYWORDS = [
+  'sugar', 'wheat', 'corn', 'dairy', 'milk', 'legume', 'soy', 'peanut',
+  'artificial', 'rice', 'oat', 'barley', 'lentil', 'bean', 'potato starch',
+  'canola oil', 'soybean oil',
+];
 
+// High-carb keywords used by the keto check below (separate from the
+// numeric net-carbs threshold, which does the primary classification).
+const HIGH_CARB_KEYWORDS = ['sugar', 'corn syrup', 'wheat flour', 'rice', 'maltodextrin', 'dextrose'];
 
-def check_fodmap_compatibility(ingredients_list):
-    text = " ".join(ingredients_list).lower()
-    conflicts = [kw for kw in FODMAP_CONFLICT_KEYWORDS if _keyword_matches(kw, text)]
-    return {'low_fodmap': len(conflicts) == 0, 'conflicts': conflicts}
+// FODMAP: sourced from Monash University's own published categories and
+// label-reading guidance (https://www.monashfodmap.com/blog/update-label-reading/,
+// https://www.monashfodmap.com/about-fodmap-and-ibs/high-and-low-fodmap-foods/)
+// -- the university that defined the FODMAP framework and runs the
+// original low-FODMAP research program. Covers all four FODMAP categories
+// (oligosaccharides/fructans+GOS, disaccharides/lactose, monosaccharides/
+// excess fructose, polyols), including the specific polyol E-numbers
+// Monash's own guidance says to check for on labels.
+const FODMAP_CONFLICT_KEYWORDS = [
+  'garlic', 'onion', 'honey', 'high fructose corn syrup', 'wheat', 'rye',
+  'inulin', 'chicory root', 'fructo-oligosaccharide', 'fos',
+  'galacto-oligosaccharide', 'gos', 'sorbitol', 'mannitol', 'xylitol',
+  'maltitol', 'isomalt', 'lactitol', 'erythritol',
+  'e420', 'e421', 'e953', 'e965', 'e966', 'e967', 'e968',
+  'chickpea', 'lentil', 'kidney bean', 'cashew', 'pistachio',
+];
 
+function checkDietCompatibility(ingredients) {
+  const text = ingredients.join(' ').toLowerCase();
+  const veganConflicts = VEGAN_CONFLICT_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
+  const vegetarianConflicts = VEGETARIAN_CONFLICT_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
+  return {
+    veganFriendly: veganConflicts.length === 0,
+    veganConflicts,
+    vegetarianFriendly: vegetarianConflicts.length === 0,
+    vegetarianConflicts,
+  };
+}
 
-def check_all_diet_compatibility(nutrition, ingredients_list):
-    if not ingredients_list:
-        return None
-    diet = check_diet_compatibility(ingredients_list)
-    halal_kosher = check_halal_kosher(ingredients_list)
-    keto = check_keto_compatibility(nutrition or {}, ingredients_list)
-    paleo = check_paleo_compatibility(ingredients_list)
-    fodmap = check_fodmap_compatibility(ingredients_list)
-    return {
-        'vegan': {'friendly': diet['vegan_friendly'], 'conflicts': diet['vegan_conflicts']},
-        'vegetarian': {'friendly': diet['vegetarian_friendly'], 'conflicts': diet['vegetarian_conflicts']},
-        'halal_kosher': {
-            'friendly': halal_kosher['halal_kosher_safe'],
-            'definite_conflicts': halal_kosher['definite_conflicts'],
-            'uncertain_ingredients': halal_kosher['uncertain_ingredients'],
-            'note': halal_kosher['note'],
-        },
-        'keto': {'friendly': keto['keto_friendly'], 'net_carbs_g': keto['net_carbs_g'], 'conflicts': keto['conflicts']},
-        'paleo': {'friendly': paleo['paleo_friendly'], 'conflicts': paleo['conflicts']},
-        'low_fodmap': {'friendly': fodmap['low_fodmap'], 'conflicts': fodmap['conflicts']},
+// REAL, STRUCTURAL LIMIT (not a bug, can't be code-fixed): actual halal and
+// kosher certification depends on facts that never appear in a printed
+// ingredient list -- HOW an animal was slaughtered, whether equipment was
+// shared with non-halal/non-kosher production, and the specific supplier
+// of ambiguous ingredients like gelatin or rennet (pig-derived vs.
+// halal-slaughtered-beef-derived vs. plant/microbial). Multiple published
+// halal ingredient guides consulted while building this list say exactly
+// this about ingredients like gelatin, mono/diglycerides, and glycerin:
+// "if derived from a halal-slaughtered animal, then halal", "if animal
+// source is used, it is suspected" -- meaning even domain-expert reference
+// guides can't give a yes/no answer from the ingredient NAME alone.
+//
+// So this function reports two tiers instead of one boolean:
+// - `definiteConflicts`: ingredients that are essentially always
+//   non-halal/non-kosher regardless of source (pork, alcohol, blood).
+// - `uncertainIngredients`: ingredients that COULD be halal/kosher or
+//   COULD NOT be, depending on unlisted sourcing -- flagged for the user
+//   to check the product's actual certification, not silently passed.
+// A product with zero matches in either list is not "certified halal/
+// kosher" -- it only means this text-based check found no red flags,
+// which is a meaningfully weaker claim, and the API response should say so.
+function checkHalalKosher(ingredients) {
+  const text = ingredients.join(' ').toLowerCase();
+  const definiteConflicts = HALAL_KOSHER_DEFINITE_CONFLICTS.filter((kw) => _keywordMatches(kw, text));
+  const uncertainIngredients = HALAL_KOSHER_UNCERTAIN_INGREDIENTS.filter((kw) => _keywordMatches(kw, text));
+  return {
+    halalKosherSafe: definiteConflicts.length === 0 && uncertainIngredients.length === 0,
+    definiteConflicts,
+    uncertainIngredients,
+    note: 'Ingredient-text screening only -- NOT a substitute for official halal/kosher certification, which depends on slaughter method and supply-chain facts not present on a printed label.',
+  };
+}
+
+function checkKetoCompatibility(nutrition, ingredients) {
+  const carbs = nutrition.total_carbs_g || 0;
+  const fiber = nutrition.fiber_g || 0;
+  const netCarbs = Math.max(carbs - fiber, 0);
+  const text = ingredients.join(' ').toLowerCase();
+  // Multi-word phrases ("corn syrup") can't use \b-per-word matching the
+  // same way single words can, since _keywordMatches escapes the whole
+  // keyword as one literal — that's fine here, \b still anchors on the
+  // phrase's outer edges (e.g. won't match "unicorn syrupy" mid-word).
+  const conflicts = HIGH_CARB_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
+  // The <=10g net carbs PER SERVING threshold is a common community/app
+  // rule-of-thumb proxy, not an official clinical standard -- published
+  // ketogenic-diet guidance (e.g. Cleveland Clinic, peer-reviewed keto
+  // studies) defines ketosis targets as ~20-50g net carbs PER DAY, which
+  // isn't directly convertible to a single per-serving cutoff without
+  // knowing how many servings of other foods someone eats that day. This
+  // is stated here rather than implied as a certified number.
+  return { ketoFriendly: netCarbs <= 10 && conflicts.length === 0, netCarbsG: netCarbs, conflicts };
+}
+
+function checkPaleoCompatibility(ingredients) {
+  const text = ingredients.join(' ').toLowerCase();
+  const conflicts = PALEO_CONFLICT_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
+  return { paleoFriendly: conflicts.length === 0, conflicts };
+}
+
+function checkFodmapCompatibility(ingredients) {
+  const text = ingredients.join(' ').toLowerCase();
+  const conflicts = FODMAP_CONFLICT_KEYWORDS.filter((kw) => _keywordMatches(kw, text));
+  return { lowFodmap: conflicts.length === 0, conflicts };
+}
+
+function checkAllDietCompatibility(nutrition, ingredients) {
+  if (!ingredients || ingredients.length === 0) return null;
+  const diet = checkDietCompatibility(ingredients);
+  const halalKosher = checkHalalKosher(ingredients);
+  const keto = checkKetoCompatibility(nutrition || {}, ingredients);
+  const paleo = checkPaleoCompatibility(ingredients);
+  const fodmap = checkFodmapCompatibility(ingredients);
+  return {
+    vegan: { friendly: diet.veganFriendly, conflicts: diet.veganConflicts },
+    vegetarian: { friendly: diet.vegetarianFriendly, conflicts: diet.vegetarianConflicts },
+    halalKosher: {
+      friendly: halalKosher.halalKosherSafe,
+      definiteConflicts: halalKosher.definiteConflicts,
+      uncertainIngredients: halalKosher.uncertainIngredients,
+      note: halalKosher.note,
+    },
+    keto: { friendly: keto.ketoFriendly, netCarbsG: keto.netCarbsG, conflicts: keto.conflicts },
+    paleo: { friendly: paleo.paleoFriendly, conflicts: paleo.conflicts },
+    lowFodmap: { friendly: fodmap.lowFodmap, conflicts: fodmap.conflicts },
+  };
+}
+
+function calculateDailyValuePercent(nutrition, ageGroup = 'adults_children_4plus') {
+  const table = AGE_GROUP_DAILY_VALUES[ageGroup] || DAILY_VALUES;
+  const dv = {};
+  for (const [key, amount] of Object.entries(nutrition)) {
+    if (key in table && amount != null) {
+      dv[key] = Math.round((amount / table[key]) * 1000) / 10;
     }
+  }
+  return dv;
+}
 
+const ADDITIVE_CATEGORY_LABELS = {
+  artificialColors: 'artificial colors',
+  artificialSweeteners: 'artificial sweeteners',
+  nitritesNitrates: 'nitrite/nitrate preservatives',
+  otherPreservatives: 'preservatives',
+  hydrogenatedOils: 'partially hydrogenated oil',
+  flavorEnhancers: 'flavor enhancers',
+};
 
-# ---------------------------------------------------------------------------
-# 5 / 11. Health score
-# ---------------------------------------------------------------------------
+const ADDITIVE_INFO = {
+  artificialColors: 'Synthetic dyes added purely for appearance. Some (e.g. Red 40, Yellow 5) are under regulatory review in various countries over possible links to hyperactivity in sensitive children.',
+  artificialSweeteners: 'Low- or zero-calorie sugar substitutes used to sweeten food without adding sugar or calories. Considered safe in typical amounts by the FDA and EFSA.',
+  nitritesNitrates: 'Preservatives that prevent bacterial growth (including botulism) and preserve color in cured meats. Can form nitrosamines, compounds linked to increased cancer risk with frequent, high intake.',
+  otherPreservatives: 'Used to extend shelf life and prevent spoilage or oxidation. Generally recognized as safe (GRAS) at the levels typically used in food.',
+  hydrogenatedOils: 'A source of trans fats, which raise LDL ("bad") cholesterol and are linked to increased heart disease risk. The FDA has restricted their use in the US food supply.',
+  flavorEnhancers: 'Used to intensify savory taste. Generally recognized as safe, though some people report sensitivity (e.g. headaches) to MSG in large amounts.',
+};
 
-# ---------------------------------------------------------------------------
-# 7b. FSA/Ofcom Nutrient Profiling Model (2004/5) -- a published, cited,
-#     government-adopted scoring model, as an alternative to this project's
-#     own hand-weighted health score.
-# ---------------------------------------------------------------------------
-# WHY THIS EXISTS: the custom health score elsewhere in this file (and in
-# nutritionParser.js) is an internally-consistent but self-invented set of
-# weights -- reasonable, but not "scientifically justified" in the sense of
-# being a peer-reviewed or regulator-adopted standard. This is NOT true of
-# the model implemented below: it is the exact UK Food Standards Agency /
-# Ofcom Nutrient Profiling Model, developed 2004-2005, still used today to
-# legally restrict TV/online advertising of "less healthy" food and drink
-# to children in the UK. Source: "Nutrient Profiling Technical Guidance",
-# Department of Health, January 2011 (supersedes the 2009 FSA edition):
-# https://assets.publishing.service.gov.uk/media/695e87982a4a53b73d513855/NutrientProfilingModel_2004_2005_TechnicalGuidance.pdf
-#
-# VALIDATION: every threshold and the A/C combination rule below was
-# checked against that document's own six worked examples (Section 4) and
-# reproduces all six published scores exactly (0, 12, 0, 5, 6, 2) -- see
-# tests/test_nutrition_parser.py::TestFsaNpmScore.
-#
-# KNOWN SIMPLIFICATIONS versus the full official model (stated plainly,
-# not hidden):
-# 1. The model scores per 100g of product. This project's parsed nutrition
-#    values are per SERVING, so this function converts using the parsed
-#    serving size in grams. If the serving size couldn't be determined as
-#    a gram amount (parse_serving_size()'s `ambiguous: True`), this
-#    function returns None rather than guessing a conversion factor.
-# 2. Fruit/vegetable/nut content (%) is one of the three "C" (beneficial)
-#    components in the official model, and can raise a score's healthiness
-#    materially (see worked example 5). This project has no way to
-#    determine that percentage from OCR'd nutrition-facts-panel text
-#    alone (it would require ingredient-composition data this project
-#    doesn't parse), so it is conservatively scored as 0% here -- the
-#    same default the official guidance uses for products with none.
-#    This means a genuinely fruit/vegetable/nut-heavy product's score from
-#    this function is a pessimistic lower bound, not a null result.
-# 3. The official model does not distinguish "food" from "drink" in its
-#    scoring formula, only in the final less-healthy threshold (4 for
-#    food, 1 for drink). Since this project doesn't classify products as
-#    food vs. drink, the food threshold (4) is used uniformly; this is
-#    stated as a simplification, not silently assumed.
-# 4. NSP vs AOAC fibre values score on very slightly different thresholds
-#    in the official model; this project's fiber_g field doesn't track
-#    which measurement method a label used, so the NSP thresholds are
-#    applied uniformly (the official guidance also permits this: NSP is
-#    the primary method, AOAC values are the fallback).
+function calculateHealthScore(dv, nutrition, additives = {}, novaGroup = null, nutriscoreGrade = null) {
+  if (!nutrition || Object.keys(nutrition).length === 0) {
+    return { score: null, label: 'N/A (no nutrition data extracted)', breakdown: [] };
+  }
 
-_FSA_NPM_ENERGY_KJ_THRESHOLDS = [335, 670, 1005, 1340, 1675, 2010, 2345, 2680, 3015, 3350]
-_FSA_NPM_SATFAT_G_THRESHOLDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-_FSA_NPM_SUGAR_G_THRESHOLDS = [4.5, 9, 13.5, 18, 22.5, 27, 31, 36, 40, 45]
-_FSA_NPM_SODIUM_MG_THRESHOLDS = [90, 180, 270, 360, 450, 540, 630, 720, 810, 900]
-_FSA_NPM_FIBRE_G_THRESHOLDS = [0.7, 1.4, 2.1, 2.8, 3.5]
-_FSA_NPM_PROTEIN_G_THRESHOLDS = [1.6, 3.2, 4.8, 6.4, 8.0]
+  let score = 100;
+  const breakdown = [];
 
-
-def _fsa_npm_points(value, thresholds):
-    return sum(1 for t in thresholds if value > t)
-
-
-def _fsa_npm_fvn_points(fvn_percent):
-    if fvn_percent > 80:
-        return 5
-    if fvn_percent > 60:
-        return 2
-    if fvn_percent > 40:
-        return 1
-    return 0
-
-
-def calculate_fsa_npm_score(nutrition, serving_size_parsed, fvn_percent=0):
-    """Returns {'score': int, 'classification': 'less healthy'|'healthier',
-    'a_points': int, 'c_points': int, 'per_100g': {...}} using the real
-    published FSA/Ofcom Nutrient Profiling Model -- or {'score': None,
-    'reason': ...} if the per-100g conversion isn't possible. See the
-    module-level comment above this function for the model's source,
-    validation, and stated simplifications.
-    """
-    if not nutrition or 'calories' not in nutrition:
-        return {'score': None, 'reason': 'No calorie value to anchor a per-100g conversion.'}
-    if not serving_size_parsed or not serving_size_parsed.get('amount_g'):
-        return {'score': None, 'reason': 'Serving size in grams could not be determined from the label (ambiguous or missing) -- refusing to guess a per-100g conversion factor.'}
-
-    grams_per_serving = serving_size_parsed['amount_g']
-    scale = 100.0 / grams_per_serving
-
-    def per100(key):
-        return nutrition.get(key, 0) * scale
-
-    energy_kj = nutrition['calories'] * 4.184 * scale  # kcal -> kJ, then per-100g
-    satfat_100g = per100('saturated_fat_g')
-    sugar_100g = per100('total_sugars_g')
-    sodium_100g = per100('sodium_mg')
-    fibre_100g = per100('fiber_g')
-    protein_100g = per100('protein_g')
-
-    a_points = (
-        _fsa_npm_points(energy_kj, _FSA_NPM_ENERGY_KJ_THRESHOLDS)
-        + _fsa_npm_points(satfat_100g, _FSA_NPM_SATFAT_G_THRESHOLDS)
-        + _fsa_npm_points(sugar_100g, _FSA_NPM_SUGAR_G_THRESHOLDS)
-        + _fsa_npm_points(sodium_100g, _FSA_NPM_SODIUM_MG_THRESHOLDS)
-    )
-    fvn_points = _fsa_npm_fvn_points(fvn_percent)
-    fibre_points = _fsa_npm_points(fibre_100g, _FSA_NPM_FIBRE_G_THRESHOLDS)
-    protein_points = _fsa_npm_points(protein_100g, _FSA_NPM_PROTEIN_G_THRESHOLDS)
-
-    protein_excluded = a_points >= 11 and fvn_points < 5
-    c_points = fibre_points + fvn_points if protein_excluded else fibre_points + fvn_points + protein_points
-
-    score = a_points - c_points
-    classification = 'less healthy' if score >= 4 else 'healthier'
-
-    return {
-        'score': score,
-        'classification': classification,
-        'a_points': a_points,
-        'c_points': c_points,
-        'protein_excluded': protein_excluded,
-        'per_100g': {
-            'energy_kj': round(energy_kj, 1), 'saturated_fat_g': round(satfat_100g, 2),
-            'total_sugars_g': round(sugar_100g, 2), 'sodium_mg': round(sodium_100g, 1),
-            'fiber_g': round(fibre_100g, 2), 'protein_g': round(protein_100g, 2),
-        },
-        'source': 'UK FSA/Ofcom Nutrient Profiling Model 2004/5 (Dept of Health Technical Guidance, Jan 2011)',
+  const negatives = [
+    ['saturated_fat_g', 0.3, 'Saturated fat'],
+    ['total_sugars_g', 0.3, 'Sugars'],
+    ['sodium_mg', 0.2, 'Sodium'],
+  ];
+  for (const [key, weight, label] of negatives) {
+    const pct = dv[key] || 0;
+    if (pct > 20) {
+      const delta = -Math.round((pct - 20) * weight * 10) / 10;
+      score += delta;
+      breakdown.push({ delta, reason: `${label} at ${pct}% daily value (>20% threshold)` });
     }
+  }
 
+  if (novaGroup === 4) {
+    score -= 15;
+    breakdown.push({ delta: -15, reason: 'NOVA group 4 — ultra-processed food' });
+  } else if (novaGroup === 3) {
+    score -= 7;
+    breakdown.push({ delta: -7, reason: 'NOVA group 3 — processed food' });
+  }
 
-def calculate_daily_value_percent(nutrient_data, daily_values=DAILY_VALUES):
-    return {
-        nutrient: round((amount / daily_values[nutrient]) * 100, 1)
-        for nutrient, amount in nutrient_data.items()
-        if nutrient in daily_values and amount is not None
-    }
+  const gradePenalty = { a: 0, b: 5, c: 12, d: 20, e: 28 };
+  const grade = (nutriscoreGrade || '').toLowerCase();
+  const penalty = Object.prototype.hasOwnProperty.call(gradePenalty, grade) ? gradePenalty[grade] : 10;
+  if (penalty > 0) {
+    score -= penalty;
+    breakdown.push({ delta: -penalty, reason: grade ? `Nutri-Score grade ${grade.toUpperCase()}` : 'Nutri-Score unknown' });
+  }
 
+  const additiveCategories = Object.keys(additives || {}).filter(
+    (k) => additives[k] && additives[k].length,
+  );
+  if (additiveCategories.length) {
+    const delta = -Math.min(additiveCategories.length * 3, 15);
+    score += delta;
+    const names = additiveCategories.map((k) => ADDITIVE_CATEGORY_LABELS[k] || k).join(', ');
+    breakdown.push({ delta, reason: `Contains ${names}` });
+  }
 
-def calculate_health_score(dv_percent, nova_group=None, nutriscore_grade=None, additives_found=None, nutrition_data=None):
-    """
-    REFERENCES (added for the internship report -- this formula is NOT a
-    peer-reviewed or externally-validated scoring model; these sources
-    justify individual THRESHOLDS used below, not the overall formula or
-    its weights, which remain this project's own judgment calls):
-      - %DV thresholds & the "over 20% DV is high" cutoff: FDA's own
-        guidance for reading the label defines 5% DV or less as "low" and
-        20% DV or more as "high" for a nutrient -- see FDA, "How to
-        Understand and Use the Nutrition Facts Label" (fda.gov). This
-        project's 20%-DV penalty trigger for sat fat/added sugar/sodium is
-        directly this FDA "high" cutoff, not an invented number. (Total
-        sugars is extracted and reported but NOT %DV-scored here -- FDA
-        publishes no official %DV for total sugars, only for added sugars,
-        so only added_sugars_g feeds this penalty. An earlier version of
-        this code used a borrowed, non-FDA 50g figure for total sugars;
-        that's been removed rather than kept as an unlabeled guess.)
-      - Trans fat penalty: WHO's position (WHO fact sheet on trans fat,
-        and the FDA's 2015 final determination that partially hydrogenated
-        oils are not GRAS) is that there is no safe intake level -- unlike
-        sat fat/sodium/sugar, trans fat has no %DV on US labels at all for
-        this reason. This project's flat per-gram penalty (as opposed to a
-        %DV-based one) reflects that "no safe threshold" framing, but the
-        specific penalty size (10 points/gram, capped at 30) is this
-        project's own choice, not a value WHO or FDA publish.
-      - NOVA group penalty: the four-group classification (1=unprocessed
-        .. 4=ultra-processed) is Monteiro et al.'s NOVA system, used by
-        OpenFoodFacts. The PENALTY SIZES here (-7 for group 3, -15 for
-        group 4) are this project's own weights -- NOVA itself is a
-        classification system, not a scoring formula, so it doesn't
-        prescribe point deductions.
-      - Nutri-Score grade penalty: grades A-E come from OpenFoodFacts'
-        Nutri-Score computation (itself based on the French/UK FSA
-        nutrient-profiling model). The letter grade is externally
-        computed and trustworthy; the POINT VALUES mapped to each letter
-        here (0/5/12/20/28) are again this project's own choice.
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  let label;
+  if (score >= 80) label = 'Excellent';
+  else if (score >= 60) label = 'Good';
+  else if (score >= 40) label = 'Moderate';
+  else label = 'Poor';
+  return { score, label, breakdown };
+}
 
-    CHANGES from the original version (bugs found during the accuracy review):
-
-    1. Trans fat now contributes to the score. It was completely absent
-       before -- a label with 3g trans fat per serving scored no worse than
-       one with 0g. Trans fat has no FDA/WHO daily-value % (real labels
-       never print a %DV next to it), so it can't use the same %DV-over-20%
-       formula as sat fat/sugar/sodium. Instead it's a flat, harsh penalty
-       per gram (WHO guidance treats trans fat as having no safe threshold),
-       capped so one bad label can't single-handedly zero the score.
-
-    2. `nutriscore_grade` now defaults to None instead of 'N/A', and the
-       "unknown grade" penalty is ONLY applied when a grade was actually
-       looked up and came back unrecognized -- not when no barcode/OFF
-       lookup happened at all. Previously, EVERY product without a barcode
-       match silently ate a -10 penalty regardless of how healthy its own
-       label was. Now: no OFF data at all -> no penalty either way (score
-       reflects the label's own numbers only). Reported an actual "N/A"-ish
-       grade after a lookup -> still penalized, since that's a genuine
-       "we don't know" signal instead of "we never asked".
-
-    3. `warnings`: if a key nutrient (sugar, sodium, saturated fat, trans
-       fat) is completely MISSING from dv_percent/nutrition_data (not
-       measured, not just zero), that's flagged in the output instead of
-       silently scoring as if it were confirmed to be 0. The score itself
-       still can't penalize what wasn't extracted -- that would require
-       guessing a number -- but callers/UI can now show "this score may be
-       incomplete" instead of presenting it as equally confident as a label
-       where every field was actually read.
-    """
-    additives_found = additives_found or []
-    nutrition_data = nutrition_data or {}
-    if not nutrition_data:
-        return {'score': None, 'label': 'N/A (no nutrition data extracted)', 'warnings': []}
-
-    warnings = []
-    score = 100
-    for key, weight in [('saturated_fat_g', 0.3), ('added_sugars_g', 0.3), ('sodium_mg', 0.2)]:
-        if key not in dv_percent:
-            warnings.append(f"{key.replace('_', ' ')} was not detected on the label -- score may be underestimated")
-            continue
-        pct = dv_percent[key]
-        if pct > 20:
-            score -= (pct - 20) * weight
-
-    trans_fat = nutrition_data.get('trans_fat_g')
-    if trans_fat is None:
-        warnings.append("trans fat was not detected on the label -- score may be underestimated")
-    elif trans_fat > 0:
-        score -= min(trans_fat * 10, 30)
-
-    if nova_group == 4:
-        score -= 15
-    elif nova_group == 3:
-        score -= 7
-
-    grade_penalty = {'a': 0, 'b': 5, 'c': 12, 'd': 20, 'e': 28}
-    if nutriscore_grade is not None:
-        score -= grade_penalty.get(str(nutriscore_grade).lower(), 10)
-    score -= min(len(additives_found) * 3, 15)
-
-    score = max(0, min(100, round(score)))
-    if score >= 80:
-        label = 'Excellent'
-    elif score >= 60:
-        label = 'Good'
-    elif score >= 40:
-        label = 'Moderate'
-    else:
-        label = 'Poor'
-    return {'score': score, 'label': label, 'warnings': warnings}
-
-
-# Suggested next step: once you're happy this file matches the notebook,
-# replace the duplicated function defs inside food_label_reader_final.ipynb
-# with `from nutrition_parser import *` at the top, so there is exactly ONE
-# copy of this logic instead of two that can drift apart.
+module.exports = {
+  parseNutrition, parseIngredients, detectAllergens, detectAdditives,
+  calculateDailyValuePercent, calculateHealthScore,
+  checkDietCompatibility, checkHalalKosher, checkKetoCompatibility,
+  checkPaleoCompatibility, checkFodmapCompatibility, checkAllDietCompatibility,
+  DAILY_VALUES, AGE_GROUP_DAILY_VALUES, cleanNum, splitTopLevelCommas, ADDITIVE_INFO,
+};
