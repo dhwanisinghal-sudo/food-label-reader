@@ -28,6 +28,7 @@ process.on('uncaughtException', (err) => {
 const {
   parseNutrition, parseIngredients, detectAllergens, detectAdditives,
   calculateDailyValuePercent, calculateHealthScore, checkAllDietCompatibility,
+  calculateFsaNpmScore, parseServingSizeGrams,
   ADDITIVE_INFO,
 } = require('./nutritionParser');
 const { getLLMAnalysis, ruleBasedFallback } = require('./llmNutritionist');
@@ -304,6 +305,12 @@ async function analyzeOneImage(filePath, { ingredientsFilePath = null, condition
 
     const healthScore = calculateHealthScore(dvPercent, nutrition, additives, novaGroup, nutriscoreGrade);
 
+    // FSA/Ofcom Nutrient Profiling Model score, alongside the custom
+    // heuristic above -- see calculateFsaNpmScore's comment in
+    // nutritionParser.js for why both are offered rather than just one.
+    const servingSizeGrams = parseServingSizeGrams(extractedText);
+    const fsaNpmScore = calculateFsaNpmScore(nutrition, servingSizeGrams);
+
     let healthAnalysis;
     const llmResult = await getLLMAnalysis(nutrition, dvPercent, ingredients, conditions, additives);
     if (llmResult.analysis) {
@@ -339,6 +346,7 @@ async function analyzeOneImage(filePath, { ingredientsFilePath = null, condition
       barcodeType: scanned ? scanned.symbolType : null,
       openFoodFacts,
       columnsDetected,
+      fsaNpmScore,
     };
   } finally {
     // Only the temp files THIS function created (the preprocessed
