@@ -3,6 +3,7 @@ const {
   calculateDailyValuePercent, calculateHealthScore,
   checkDietCompatibility, checkHalalKosher, checkKetoCompatibility,
   checkPaleoCompatibility, checkFodmapCompatibility, checkAllDietCompatibility,
+  calculateFsaNpmScore,
   cleanNum, splitTopLevelCommas,
 } = require('../src/nutritionParser');
 
@@ -452,5 +453,51 @@ describe('calculateHealthScore', () => {
     const result = calculateHealthScore(dv, { calories: 100 }, additives, 4, 'e');
     expect(result.score).toBeGreaterThanOrEqual(0);
     expect(result.score).toBeLessThanOrEqual(100);
+  });
+});
+
+describe('calculateFsaNpmScore', () => {
+  // Reproduces official worked examples from "Nutrient Profiling Technical
+  // Guidance", UK Dept of Health, Jan 2011 -- same validation as the
+  // Python TestFsaNpmScore suite, so both implementations are locked to
+  // the same published, government-adopted reference numbers.
+  test('worked example 2: vanilla ice cream scores 12, less healthy', () => {
+    const nutrition = {
+      calories: 741 / 4.184, saturated_fat_g: 6.1, total_sugars_g: 18.7,
+      sodium_mg: 60, fiber_g: 0, protein_g: 3.6,
+    };
+    const result = calculateFsaNpmScore(nutrition, { amount_g: 100.0, ambiguous: false });
+    expect(result.score).toBe(12);
+    expect(result.classification).toBe('less healthy');
+    expect(result.proteinExcluded).toBe(true);
+  });
+
+  test('worked example 4: tomato soup scores 5', () => {
+    const nutrition = {
+      calories: 155 / 4.184, saturated_fat_g: 0.4, total_sugars_g: 3.6,
+      sodium_mg: 471, fiber_g: 0.2, protein_g: 0.3,
+    };
+    const result = calculateFsaNpmScore(nutrition, { amount_g: 100.0, ambiguous: false });
+    expect(result.score).toBe(5);
+  });
+
+  test('worked example 5: cereal bar with fruit content scores 6', () => {
+    const nutrition = {
+      calories: 1504 / 4.184, saturated_fat_g: 1.4, total_sugars_g: 35.7,
+      sodium_mg: 0, fiber_g: 4.8, protein_g: 4.3,
+    };
+    const result = calculateFsaNpmScore(nutrition, { amount_g: 100.0, ambiguous: false }, 46);
+    expect(result.score).toBe(6);
+  });
+
+  test('refuses to guess when serving size is ambiguous', () => {
+    const result = calculateFsaNpmScore({ calories: 100 }, { amount_g: null, ambiguous: true });
+    expect(result.score).toBeNull();
+    expect(result.reason).toMatch(/could not be determined/i);
+  });
+
+  test('refuses when no serving size data was found at all', () => {
+    const result = calculateFsaNpmScore({ calories: 100 }, null);
+    expect(result.score).toBeNull();
   });
 });
