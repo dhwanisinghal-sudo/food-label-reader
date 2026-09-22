@@ -587,10 +587,148 @@ function calculateHealthScore(dv, nutrition, additives = {}, novaGroup = null, n
   return { score, label, breakdown };
 }
 
+// ---------------------------------------------------------------------------
+// Extracts a STRUCTURED serving size (grams, if determinable) from the raw
+// OCR text -- ported from parse_serving_size() in nutrition_parser.py,
+// kept logic-identical, specifically so calculateFsaNpmScore has a real
+// per-100g conversion to work with instead of always refusing. Returns
+// null if no "Serving Size" (or non-US "Per X") line was found at all;
+// otherwise { raw, amountG, householdMeasure, ambiguous }. `ambiguous:
+// true` means no gram-equivalent could be extracted -- callers must NOT
+// assume any default serving weight when this is true.
+function parseServingSizeGrams(text) {
+  let m = text.match(/serving size\s*([^\n]+)/i);
+  if (!m) {
+    const lines = text.split('\n');
+    for (const line of lines) {
+      const candMatch = line.match(/^\s*per\s+([^\n]+)/i);
+      if (!candMatch) continue;
+      if (/^(?:serving|container|package|pack)\b/i.test(candMatch[1].trim())) continue;
+      m = candMatch;
+      break;
+    }
+  }
+  if (!m) return null;
+  const raw = m[1].trim();
+
+  let amountG = null;
+  const parenMatch = raw.match(new RegExp(`\\(\\s*${NUM}\\s*${G_UNIT}\\s*[/)]`, 'i'));
+  if (parenMatch) {
+    const val = cleanNum(parenMatch[1]);
+    if (val !== null && val > 0 && val <= 1000) amountG = val;
+  }
+  if (amountG === null) {
+    const directMatch = raw.match(new RegExp(`^\\s*${NUM}\\s*g\\b`, 'i'));
+    if (directMatch) {
+      const val = cleanNum(directMatch[1]);
+      if (val !== null && val > 0 && val <= 1000) amountG = val;
+    }
+  }
+
+  const householdMatch = raw.match(/([^(]+)/);
+  let household = householdMatch ? householdMatch[1].trim() : null;
+  if (household) {
+    household = household.replace(/\/+$/, '').trim() || null;
+  }
+
+  return {
+    raw,
+    amount_g: amountG,
+    household_measure: household,
+    ambiguous: amountG === null,
+  };
+}
+
+// FSA/Ofcom Nutrient Profiling Model (2004/5) -- ported from
+// calculate_fsa_npm_score() in nutrition_parser.py, kept logic-identical.
+// See that function's module-level comment for the full source citation,
+// validation against the official worked examples, and stated
+// simplifications (no fruit/veg/nut % detection, food-vs-drink threshold
+// simplification, NSP-only fibre thresholds). Source: "Nutrient Profiling
+// Technical Guidance", UK Dept of Health, Jan 2011.
+
+const FSA_NPM_ENERGY_KJ_THRESHOLDS = [335, 670, 1005, 1340, 1675, 2010, 2345, 2680, 3015, 3350];
+const FSA_NPM_SATFAT_G_THRESHOLDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const FSA_NPM_SUGAR_G_THRESHOLDS = [4.5, 9, 13.5, 18, 22.5, 27, 31, 36, 40, 45];
+const FSA_NPM_SODIUM_MG_THRESHOLDS = [90, 180, 270, 360, 450, 540, 630, 720, 810, 900];
+const FSA_NPM_FIBRE_G_THRESHOLDS = [0.7, 1.4, 2.1, 2.8, 3.5];
+const FSA_NPM_PROTEIN_G_THRESHOLDS = [1.6, 3.2, 4.8, 6.4, 8.0];
+
+function fsaNpmPoints(value, thresholds) {
+  return thresholds.filter((t) => value > t).length;
+}
+
+function fsaNpmFvnPoints(fvnPercent) {
+  if (fvnPercent > 80) return 5;
+  if (fvnPercent > 60) return 2;
+  if (fvnPercent > 40) return 1;
+  return 0;
+}
+
+// nutrition: parsed nutrition object (calories, saturated_fat_g, etc.)
+// servingSizeParsed: { amount_g, ambiguous, ... } from parse_serving_size-equivalent data
+// fvnPercent: fruit/veg/nut percentage, defaults to 0 (see Python docstring for why)
+function calculateFsaNpmScore(nutrition, servingSizeParsed, fvnPercent = 0) {
+  if (!nutrition || nutrition.calories == null) {
+    return { score: null, reason: 'No calorie value to anchor a per-100g conversion.' };
+  }
+  if (!servingSizeParsed || !servingSizeParsed.amount_g) {
+    return {
+      score: null,
+      reason: 'Serving size in grams could not be determined from the label (ambiguous or missing) -- refusing to guess a per-100g conversion factor.',
+    };
+  }
+
+  const gramsPerServing = servingSizeParsed.amount_g;
+  const scale = 100.0 / gramsPerServing;
+  const per100 = (key) => (nutrition[key] || 0) * scale;
+
+  const energyKj = nutrition.calories * 4.184 * scale; // kcal -> kJ, then per-100g
+  const satFat100g = per100('saturated_fat_g');
+  const sugar100g = per100('total_sugars_g');
+  const sodium100g = per100('sodium_mg');
+  const fibre100g = per100('fiber_g');
+  const protein100g = per100('protein_g');
+
+  const aPoints = (
+    fsaNpmPoints(energyKj, FSA_NPM_ENERGY_KJ_THRESHOLDS)
+    + fsaNpmPoints(satFat100g, FSA_NPM_SATFAT_G_THRESHOLDS)
+    + fsaNpmPoints(sugar100g, FSA_NPM_SUGAR_G_THRESHOLDS)
+    + fsaNpmPoints(sodium100g, FSA_NPM_SODIUM_MG_THRESHOLDS)
+  );
+  const fvnPoints = fsaNpmFvnPoints(fvnPercent);
+  const fibrePoints = fsaNpmPoints(fibre100g, FSA_NPM_FIBRE_G_THRESHOLDS);
+  const proteinPoints = fsaNpmPoints(protein100g, FSA_NPM_PROTEIN_G_THRESHOLDS);
+
+  const proteinExcluded = aPoints >= 11 && fvnPoints < 5;
+  const cPoints = proteinExcluded ? fibrePoints + fvnPoints : fibrePoints + fvnPoints + proteinPoints;
+
+  const score = aPoints - cPoints;
+  const classification = score >= 4 ? 'less healthy' : 'healthier';
+
+  return {
+    score,
+    classification,
+    aPoints,
+    cPoints,
+    proteinExcluded,
+    per100g: {
+      energyKj: Math.round(energyKj * 10) / 10,
+      saturatedFatG: Math.round(satFat100g * 100) / 100,
+      totalSugarsG: Math.round(sugar100g * 100) / 100,
+      sodiumMg: Math.round(sodium100g * 10) / 10,
+      fiberG: Math.round(fibre100g * 100) / 100,
+      proteinG: Math.round(protein100g * 100) / 100,
+    },
+    source: 'UK FSA/Ofcom Nutrient Profiling Model 2004/5 (Dept of Health Technical Guidance, Jan 2011)',
+  };
+}
+
 module.exports = {
   parseNutrition, parseIngredients, detectAllergens, detectAdditives,
   calculateDailyValuePercent, calculateHealthScore,
   checkDietCompatibility, checkHalalKosher, checkKetoCompatibility,
   checkPaleoCompatibility, checkFodmapCompatibility, checkAllDietCompatibility,
+  calculateFsaNpmScore, parseServingSizeGrams,
   DAILY_VALUES, AGE_GROUP_DAILY_VALUES, cleanNum, splitTopLevelCommas, ADDITIVE_INFO,
 };
