@@ -1,5 +1,8 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import React, { useState } from 'react';
+import {
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert,
+} from 'react-native';
+import { exportResultAsJson, exportResultAsPdf } from '../services/exportUtils';
 
 // Matches the backend's actual thresholds exactly (calculateHealthScore in
 // nutritionParser.js): >=80 Excellent, >=60 Good, >=40 Moderate, else Poor.
@@ -51,13 +54,47 @@ function DVBar({ pct }) {
   );
 }
 
+// halalKosher has a different (two-tier) shape from the other diets' plain
+// `conflicts` array -- see checkHalalKosher's docstring in the backend's
+// nutritionParser.js. Matches the identical helper in the web app's
+// index.html and in exportUtils.js.
+function conflictsListFor(key, entry) {
+  if (key === 'halalKosher') {
+    const list = [...(entry.definiteConflicts || [])];
+    (entry.uncertainIngredients || []).forEach((i) => list.push(`${i} (needs verification)`));
+    return list;
+  }
+  return entry.conflicts || [];
+}
+
+const DIET_LABELS = {
+  vegan: 'Vegan', vegetarian: 'Vegetarian', halalKosher: 'Halal/Kosher',
+  keto: 'Keto', paleo: 'Paleo', lowFodmap: 'Low-FODMAP',
+};
+
 export default function ResultsScreen({ route }) {
   const { result } = route.params;
+  const [exporting, setExporting] = useState(null); // 'json' | 'pdf' | null
   const {
     nutrition = {}, dailyValuePercent = {}, ingredients = [], allergens = [],
     additives = {}, additiveInfo = {}, dietCompatibility, healthScore, healthAnalysis,
     barcode, barcodeType, openFoodFacts, ageGroup,
   } = result || {};
+
+  const handleExport = async (format) => {
+    setExporting(format);
+    try {
+      if (format === 'json') {
+        await exportResultAsJson(result);
+      } else {
+        await exportResultAsPdf(result);
+      }
+    } catch (err) {
+      Alert.alert('Export failed', err?.message || 'Something went wrong generating the export.');
+    } finally {
+      setExporting(null);
+    }
+  };
 
   // additives is an OBJECT keyed by category — {artificialColors: ['Red 40'], ...}
   // — not an array, so it can't use .length directly.
@@ -74,6 +111,26 @@ export default function ResultsScreen({ route }) {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
+      <View style={styles.exportRow}>
+        <TouchableOpacity
+          style={styles.exportButton}
+          onPress={() => handleExport('json')}
+          disabled={exporting !== null}
+        >
+          {exporting === 'json'
+            ? <ActivityIndicator size="small" color="#2e7d32" />
+            : <Text style={styles.exportButtonText}>⬇ Export JSON</Text>}
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.exportButton}
+          onPress={() => handleExport('pdf')}
+          disabled={exporting !== null}
+        >
+          {exporting === 'pdf'
+            ? <ActivityIndicator size="small" color="#2e7d32" />
+            : <Text style={styles.exportButtonText}>⬇ Export PDF</Text>}
+        </TouchableOpacity>
+      </View>
       {ageGroup && (
         <Text style={styles.ageGroupTag}>
           %DV reference: {AGE_GROUP_LABELS[ageGroup] || ageGroup}
@@ -156,11 +213,17 @@ export default function ResultsScreen({ route }) {
 
       {dietCompatibility && (
         <Section title="🥦 Diet Compatibility">
-          {Object.entries(dietCompatibility).map(([diet, compatible]) => (
-            <Text key={diet} style={styles.bodyText}>
-              {compatible ? '✅' : '❌'} {diet}
-            </Text>
-          ))}
+          {Object.entries(DIET_LABELS).map(([key, label]) => {
+            const entry = dietCompatibility[key];
+            if (!entry) return null;
+            const ok = entry.friendly;
+            return (
+              <Text key={key} style={styles.bodyText}>
+                {ok ? '✅' : '❌'} {label}
+                {!ok ? ` — ${conflictsListFor(key, entry).join(', ')}` : ''}
+              </Text>
+            );
+          })}
         </Section>
       )}
 
@@ -205,6 +268,12 @@ export default function ResultsScreen({ route }) {
 
 const styles = StyleSheet.create({
   container: { padding: 20, paddingBottom: 60, backgroundColor: '#fff' },
+  exportRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+  exportButton: {
+    flex: 1, borderWidth: 1, borderColor: '#2e7d32', borderRadius: 8,
+    paddingVertical: 10, alignItems: 'center',
+  },
+  exportButtonText: { color: '#2e7d32', fontWeight: '600', fontSize: 13 },
   ageGroupTag: {
     fontSize: 12, color: '#666', textAlign: 'center', marginBottom: 10,
     backgroundColor: '#f2f2f2', alignSelf: 'center', paddingVertical: 4, paddingHorizontal: 12, borderRadius: 12,
