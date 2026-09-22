@@ -1,8 +1,15 @@
 /**
  * server.js — Food Label Reader backend
  * Endpoints:
- *   POST /api/analyze  — upload a label photo, get OCR + nutrition + health analysis
- *   GET  /api/health    — health check
+ *   POST /api/analyze       — upload a label photo, get OCR + nutrition + health analysis
+ *   POST /api/analyze-batch — same, for multiple photos in one request
+ *   POST /api/signup        — create an account, returns a JWT
+ *   POST /api/login         — returns a JWT
+ *   GET  /api/history       — logged-in account's saved scans
+ *   POST /api/history       — save a scan an ALREADY-RUN analysis (e.g. from the
+ *                              notebook, which does its own OCR/parsing locally)
+ *                              to the logged-in account's history
+ *   GET  /api/health        — health check
  */
 
 require('dotenv').config();
@@ -195,6 +202,53 @@ app.get('/api/history', requireAuth, async (req, res) => {
     res.json({ count: scans.length, scans });
   } catch (err) {
     res.status(500).json({ error: `Failed to fetch history: ${err.message}` });
+  }
+});
+
+// Lets a client that already ran the analysis ITSELF (currently: the
+// notebook, which does its own local OCR/parsing in Python rather than
+// calling this server) save the result to the caller's account history.
+// /api/analyze and /api/analyze-batch save to history automatically because
+// they own the whole pipeline end to end; this route exists for the
+// opposite case, where the pipeline ran elsewhere and only the finished
+// result needs a home. Same ScanHistory document shape either way, so
+// GET /api/history returns notebook-run and web/mobile-run scans
+// side by side without the caller needing to know which produced which.
+app.post('/api/history', requireAuth, async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected. Set MONGODB_URI in .env to enable history.' });
+  }
+  const {
+    extractedText, nutrition, dailyValuePercent, ingredients, ingredientsSource,
+    allergens, additives, dietCompatibility, healthScore, healthAnalysis,
+    conditions, barcode, barcodeType, openFoodFacts,
+  } = req.body || {};
+
+  if (!nutrition || typeof nutrition !== 'object' || Array.isArray(nutrition)) {
+    return res.status(400).json({ error: 'A "nutrition" object is required.' });
+  }
+
+  try {
+    const scan = await ScanHistory.create({
+      userId: req.userId,
+      extractedText,
+      nutrition,
+      dailyValuePercent,
+      ingredients,
+      ingredientsSource,
+      allergens,
+      additives,
+      dietCompatibility,
+      healthScore,
+      healthAnalysis,
+      conditions,
+      barcode,
+      barcodeType,
+      openFoodFacts,
+    });
+    res.status(201).json({ scan });
+  } catch (err) {
+    res.status(500).json({ error: `Failed to save scan: ${err.message}` });
   }
 });
 
