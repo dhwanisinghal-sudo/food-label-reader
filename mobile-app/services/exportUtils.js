@@ -12,7 +12,7 @@
  *    jsPDF (which is browser-only) -- the HTML template below is written
  *    to mirror the web app's PDF layout/section order, not copy its code.
  */
-import * as FileSystem from 'expo-file-system';
+import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Print from 'expo-print';
 
@@ -51,11 +51,9 @@ async function shareFile(uri) {
 
 export async function exportResultAsJson(result) {
   const base = fileBaseName(result);
-  const uri = `${FileSystem.cacheDirectory}${base}.json`;
-  await FileSystem.writeAsStringAsync(uri, JSON.stringify(result, null, 2), {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
-  await shareFile(uri);
+  const file = new File(Paths.cache, `${base}.json`);
+  await file.write(JSON.stringify(result, null, 2));
+  await shareFile(file.uri);
 }
 
 function escapeHtml(str) {
@@ -140,7 +138,8 @@ export async function exportResultAsPdf(result) {
   // printToFileAsync writes to a random cache filename; rename to
   // something the user will recognize in a share sheet / Files app.
   const base = fileBaseName(result);
-  const renamedUri = `${FileSystem.cacheDirectory}${base}.pdf`;
-  await FileSystem.moveAsync({ from: uri, to: renamedUri });
-  await shareFile(renamedUri);
+  const sourceFile = new File(uri);
+  const renamedFile = new File(Paths.cache, `${base}.pdf`);
+  sourceFile.move(renamedFile);
+  await shareFile(renamedFile.uri);
 }
