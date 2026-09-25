@@ -48,6 +48,13 @@ The project exists in **three implementations**, developed independently and kep
 | Scan history | SQLite, local to that notebook session, **optionally also synced to your account** | MongoDB, saved per logged-in account | Reads the same MongoDB history as the web app |
 | Accounts / login | ✅ *(opt-in — log in with the same account used on the web app; the notebook still does its own OCR/parsing locally, it just also posts finished results to `POST /api/history`)* | ✅ (email + password, JWT) | ✅ (shares the web app's accounts) |
 
+## 🌐 Try It Live
+
+- **Web app:** https://food-label-reader-1.onrender.com  
+  (Render's free tier sleeps when idle — the first load after inactivity can take up to a minute.)
+- **Mobile app (Android):** https://expo.dev/accounts/adkim2303/projects/food-label-reader-app/builds/67b021ca-3ca4-45eb-b713-a58fb7a937f5  
+  Open this link on an Android device to install directly, or scan the QR code on the build page.
+
 ## 🚀 How to Run It
 
 ### Web App (Node/Express)
